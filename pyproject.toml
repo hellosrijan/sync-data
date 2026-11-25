@@ -1,0 +1,26 @@
+[project]
+name = "sync-data"
+version = "0.1.0"
+description = "Two-way sync of customer/contact records between Salesforce and the portal"
+readme = "README.md"
+authors = [{ name = "Srijan Kumar", email = "srijan.kumar.cs@gmail.com" }]
+requires-python = ">=3.14"
+dependencies = [
+    "django>=5.2,<5.3",
+    "django-dramatiq>=0.15.0",
+    "django-environ>=0.14.0",
+    "djangorestframework>=3.18.3",
+    "dramatiq-crontab>=1.2.1",
+    "dramatiq[redis,watch]>=2.2.1",
+    "psycopg[binary]>=3.3.9",
+]
+
+[tool.uv]
+package = false # Django app run from src/, not an installable package
+
+[dependency-groups]
+dev = ["pytest>=9.2.0", "pytest-django>=4.14.0"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+pythonpath = ["src"]

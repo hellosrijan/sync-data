@@ -1,0 +1,54 @@
+# Build the GitHub wiki from the repo (wiki/*.md, README.md, docs/design.md) and publish it.
+# The repo is the source of truth: edits made in the wiki UI are overwritten here.
+name: wiki
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "wiki/**"
+      - "README.md"
+      - "docs/design.md"
+      - "scripts/build-wiki.sh"
+      - ".github/workflows/wiki.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write # push to <repo>.wiki.git with GITHUB_TOKEN
+
+concurrency:
+  group: wiki
+  cancel-in-progress: false # never drop a publish half-way; queue instead
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build pages
+        run: bash scripts/build-wiki.sh "$RUNNER_TEMP/wiki-build" "${{ github.server_url }}/${{ github.repository }}/blob/${{ github.ref_name }}"
+
+      - name: Clone wiki
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          if ! git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.wiki.git" "$RUNNER_TEMP/wiki-repo"; then
+            echo "::error::Wiki repo not found. Enable Wikis in repo Settings > Features, then create any first page once in the GitHub UI so the wiki repo exists. Re-run this workflow after that."
+            exit 1
+          fi
+
+      - name: Publish
+        working-directory: ${{ runner.temp }}/wiki-repo
+        run: |
+          # Mirror: pages no longer built are removed from the wiki.
+          rsync -a --delete --exclude .git "$RUNNER_TEMP/wiki-build/" ./
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Wiki already up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Publish wiki from ${GITHUB_SHA::7}"
+          git push

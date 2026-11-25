@@ -1,0 +1,65 @@
+# Postgres, Redis and the background worker. Django's web server runs on the host:
+# `uv run python src/manage.py runserver`.
+services:
+  db:
+    image: postgres:17-alpine
+    env_file: .env
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    # AOF on: queued sync work must survive a Redis restart (see Round1 outage rule).
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Dramatiq worker + dramatiq-crontab scheduler in one container. The scheduler
+  # enqueues @cron actors onto Redis; the worker executes them.
+  worker:
+    build: .
+    env_file: .env
+    environment:
+      # Reach the other containers by service name, not the host's localhost.
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./src:/app/src # live code; picked up by --reload-use-polling
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    # ponytail: two processes, bash as supervisor. If either exits, stop the other
+    # so the container exits and `restart` brings both back. Split into two
+    # services (same image) if they ever need separate scaling or logs.
+    command:
+      - bash
+      - -c
+      - |
+        trap 'kill -TERM $$(jobs -p) 2>/dev/null' TERM INT
+        python manage.py crontab &
+        python manage.py rundramatiq --reload --reload-use-polling --processes 1 --threads 2 &
+        wait -n
+        kill -TERM $$(jobs -p) 2>/dev/null
+        wait
+
+volumes:
+  pgdata:
+  redisdata:

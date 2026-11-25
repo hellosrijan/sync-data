@@ -1,0 +1,35 @@
+{
+  // opencode (V2 schema) project config. Mirrors the Claude Code setup in .claude/:
+  //   rules    -> CLAUDE.md (opencode reads it because this repo has no AGENTS.md)
+  //   agents   -> .opencode/agents/*.md, thin wrappers around .claude/agents/*.md
+  //   commands -> .opencode/commands/ready-to-commit.md, wraps .claude/commands/ready-to-commit.md
+  "$schema": "https://opencode.ai/config.json",
+
+  "mcp": {
+    "servers": {
+      // Same server and the same memory.db as the Claude Code agent-memory plugin, so both
+      // harnesses share one memory. Needs uv. Pinned to mcp<2: the plugin uses the
+      // Server.list_tools() decorator API, which mcp 2.x removed.
+      // ponytail: plugin path is pinned to 0.1.0. Update it if the plugin is upgraded.
+      "agent-memory": {
+        "type": "local",
+        "command": [
+          "uv", "run", "--quiet", "--no-project",
+          "--with", "mcp<2", "--with", "pyyaml", "--with", "aiosqlite",
+          "python", "{env:HOME}/.claude/plugins/cache/claude-community/agent-memory/0.1.0/plugin/mcp_server.py"
+        ],
+        "environment": {
+          "PYTHONPATH": "{env:HOME}/.claude/plugins/cache/claude-community/agent-memory/0.1.0",
+          "AGENT_MEMORY_DATA": "{env:HOME}/.claude/plugins/data/agent-memory-claude-community"
+        }
+      }
+    }
+  },
+
+  // CLAUDE.md rule: never commit or push without the user's explicit permission.
+  // Enforced here as a prompt for every agent. Last matching rule wins.
+  "permissions": [
+    { "action": "shell", "resource": "git commit *", "effect": "ask" },
+    { "action": "shell", "resource": "git push *", "effect": "ask" }
+  ]
+}
