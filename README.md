@@ -46,7 +46,8 @@ The `worker` container runs two processes:
   `@interval(...)`. A Redis lock keeps it to one scheduler.
 
 If either process exits, the container exits and `restart: unless-stopped` brings both back.
-`docker compose logs -f worker` shows a heartbeat line every minute when both are healthy.
+`docker compose logs -f worker` shows a heartbeat line every minute when both are healthy. The
+heartbeat is dramatiq-crontab's own actor; the project has no actors yet.
 
 Put actors in `<app>/tasks.py`; both commands discover them automatically. After changing
 dependencies, rebuild with `docker compose up -d --build worker`.

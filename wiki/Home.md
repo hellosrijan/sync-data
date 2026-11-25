@@ -24,6 +24,7 @@ logic yet. The design is in progress on the [Design](Design) page.
 | Page | What's in it |
 |---|---|
 | [Getting Started](Getting-Started) | Setup, running the stack, the worker, layout |
+| [Architecture](Architecture) | Draft architecture: who calls whom, the diagram, open points |
 | [Design](Design) | The design document: assumptions, rules, outage arithmetic |
 | [Development Workflow](Development-Workflow) | Commit rules, Claude agents, `/ready-to-commit`, how this wiki is published |
 

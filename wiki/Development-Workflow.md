@@ -27,7 +27,7 @@ The agents:
 | Agent | Does | Runs |
 |---|---|---|
 | `document-update` | Keeps `docs/design.md`, `README.md`, the `wiki/` pages and `CLAUDE.md` accurate against the code and the brief. Records decisions; never invents them. | Via `/ready-to-commit`, or on request |
-| `agent-code-review` | Writes and runs pytest-django tests; reviews the code against the brief's rules (duplicate webhook, out-of-order change, sync loop, outage recovery, rate cap, history). | Only via `/ready-to-commit` |
+| `agent-code-review` | Writes and runs pytest-django tests; reviews the code against the brief's rules (duplicate webhook, out-of-order webhook, per-field merge, sync loop, outage durability, rate cap, history, webhook validation). | Only via `/ready-to-commit` |
 | `chat-export` | Runs `scripts/export-chats.py`, which exports every Claude Code and opencode session to `docs/chats/` as markdown, redacting `.env` secrets. The brief requires the full chat history. | Only via `/ready-to-commit` |
 
 ## `/ready-to-commit`
@@ -70,7 +70,7 @@ sync tests will need one.
 
 | Wiki page | Source in the repo |
 |---|---|
-| Home, Development Workflow, sidebar | `wiki/*.md` |
+| Home, Architecture, Development Workflow, sidebar | `wiki/*.md` |
 | Getting Started | `README.md` |
 | Design | `docs/design.md` |
 

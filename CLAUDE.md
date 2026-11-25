@@ -43,7 +43,7 @@ src/config/   settings, urls
 src/sync/     the sync app
 src/utils/    /health/ (DRF RetrieveAPIView), rundramatiq override
 docs/         Round1.html (brief), design.md (design doc), chats/ (session exports)
-wiki/         hand-written GitHub wiki pages (Home, Development-Workflow, _Sidebar)
+wiki/         hand-written GitHub wiki pages (Home, Architecture, Development-Workflow, _Sidebar)
 scripts/build-wiki.sh       builds the wiki: wiki/*.md + README.md + docs/design.md
 scripts/export-chats.py     exports Claude Code + opencode sessions to docs/chats/
 .github/workflows/wiki.yml  publishes the build to the GitHub wiki on push to main
