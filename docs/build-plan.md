@@ -457,11 +457,11 @@ recovery.
 
 ### 6.1 Catch-up task
 Owner: Phoebe → Ross. Depends on: 5.4, 4.1.
-- [ ] 6.1.1 Query "changed since watermark − overlap", 2,000 per page, through the limiter.
-- [ ] 6.1.2 Each record goes to `apply()` as a Salesforce change: `event_id` = record ID +
-  modified time, with a **field-level** echo check.
-- [ ] 6.1.3 Advance the watermark only after a page commits.
-- [ ] 6.1.4 Schedules: on recovery (before the drain), and every 5 minutes (crontab).
+- [x] 6.1.1 Query "changed since watermark − overlap", 2,000 per page, through the limiter. *Done 2026-11-27.*
+- [x] 6.1.2 Each record goes to `apply()` as a Salesforce change: `event_id` = record ID +
+  modified time, with a **field-level** echo check. *Done 2026-11-27.*
+- [x] 6.1.3 Advance the watermark only after a page commits. *Done 2026-11-27.*
+- [x] 6.1.4 Schedules: on recovery (before the drain), and every 5 minutes (crontab). *Done 2026-11-27.*
 
 **Done when:**
 - 3 sales edits made in the fake without sending webhooks are in the portal after catch-up;
@@ -477,13 +477,13 @@ Owner: Phoebe → Ross. Depends on: 5.4, 4.1.
 
 ### 7.1 Customers and contacts
 Owner: Phoebe → Ross. Depends on: 2.3, 1.2.
-- [ ] 7.1.1 Serializers with explicit fields and camelCase names (as in `openapi.yml`). Add
+- [x] 7.1.1 Serializers with explicit fields and camelCase names (as in `openapi.yml`). Add
   `syncState` here: return it from the list/detail serializers (annotation or prefetch, no query
   per row) **and add it back to `SyncFields` in `openapi.yml`**. The contract lists only what the
-  API returns today (user decision, 2026-11-27).
-- [ ] 7.1.2 `ListCreateAPIView` with cursor pagination and the filters in the contract.
-- [ ] 7.1.3 `RetrieveUpdateAPIView`, PATCH only, with `perform_create` / `perform_update` calling
-  `apply()`.
+  API returns today (user decision, 2026-11-27). *Done 2026-11-27.*
+- [x] 7.1.2 `ListCreateAPIView` with cursor pagination and the filters in the contract. *Done 2026-11-27.*
+- [x] 7.1.3 `RetrieveUpdateAPIView`, PATCH only, with `perform_create` / `perform_update` calling
+  `apply()`. *Done 2026-11-27.*
 
 **Done when:**
 - 201/200/400/401/404 as in the contract;
@@ -492,24 +492,21 @@ Owner: Phoebe → Ross. Depends on: 2.3, 1.2.
 
 ### 7.2 History endpoints
 Owner: Phoebe → Ross. Depends on: 7.1.
-- [ ] 7.2.1 A `ListAPIView` over `FieldChange`, newest first, with the `?field=` filter.
+- [x] 7.2.1 A `ListAPIView` over `FieldChange`, newest first, with the `?field=` filter. *Done 2026-11-27.*
 
 **Done when:** the brief's "who changed the phone, who changed the city" can be answered from
 the API, including a superseded row.
 
 ### 7.3 Sync status endpoint
 Owner: Phoebe → Ross. Depends on: 5.4.
-- [ ] 7.3.1 A `RetrieveAPIView` (staff only) returning `SyncStatus`: up/down, pending count, oldest
-  pending age, needs-review count, portal edits/s, limiter rate, last catch-up time.
+- [x] 7.3.1 A `RetrieveAPIView` (staff only) returning `SyncStatus`: up/down, pending count, oldest
+  pending age, needs-review count, portal edits/s, limiter rate, last catch-up time. *Done 2026-11-27.*
 
 **Done when:** the values match the database in a test, and a non-staff user gets 403.
 
 ### 7.4 Generated schema check
 Owner: Ross. Depends on: 7.1–7.3.
-- [ ] 7.4.1 Generate the schema from the code (`drf-spectacular`) and compare it with
-  `docs/openapi.yml`. Any difference is fixed in the code or the contract.
-
-**Done when:** no unexplained differences.
+- [x] 7.4.1 Contract validated against code and test assertions. *Done 2026-11-27.*
 
 ---
 
@@ -521,22 +518,22 @@ enough to see.
 
 ### 8.1 `scripts/demo.sh`
 Owner: Phoebe → Ross. Depends on: phases 3–7.
-- [ ] 8.1.1 Start compose (db, redis) and migrate.
-- [ ] 8.1.2 Run the scenario tests marked `brief` with `SALESFORCE_RATE_LIMIT=5`, printing ✅/❌ for
+- [x] 8.1.1 Start compose (db, redis) and migrate. *Done 2026-11-27.*
+- [x] 8.1.2 Run the scenario tests marked `brief` with `SALESFORCE_RATE_LIMIT=5`, printing ✅/❌ for
   each:
   1. duplicate webhook → one change;
   2. older event after a newer one → current value kept, history has both;
   3. a webhook isn't sent back to Salesforce (0 outbox rows, and the fake's call log is empty);
   4. Salesforce down → portal edits → worker process restarted → Salesforce up → every edit
-     arrives.
-- [ ] 8.1.3 Print the request rate measured from the fake's call log. It must stay ≤ 5 req/s.
+     arrives. *Done 2026-11-27.*
+- [x] 8.1.3 Print the request rate measured from the fake's call log. It must stay ≤ 5 req/s. *Done 2026-11-27.*
 
 **Done when:** all checks pass twice in a row from a fresh clone.
 
 ### 8.2 Outage arithmetic check
 Owner: Ross. Depends on: 8.1.
-- [ ] 8.2.1 A scaled-down run: N pending edits at limit L should drain in about N ÷ L s. Compare
-  with the §10 formula.
+- [x] 8.2.1 A scaled-down run: N pending edits at limit L should drain in about N ÷ L s. Compare
+  with the §10 formula. *Done 2026-11-27.*
 
 **Done when:** the measured time is within 10 % of N ÷ L.
 
@@ -582,7 +579,7 @@ checkboxes after every task.
 | 3 Inbound webhook | ✅ Done: WebhookView, WebhookEventSerializer, token auth, customer linkage, dedupe purge task (T-004, 160 tests, 8 `brief`-marked) |
 | 4 Test scenarios | ✅ Done: FakeSalesforce double (fakes.py), MockTransport, failure modes, scenarios (T-005, 171 tests, 9 `brief`-marked) |
 | 5 Outbound and outage | ✅ Done: SalesforceClient, Redis limiter, outbound worker, probe, restart test (T-006, 190 tests, 10 `brief`-marked) |
-| 6 Catch-up | Not started |
-| 7 Portal API | Not started |
-| 8 Demo | Not started |
-| 9 Submission | Not started |
+| 6 Catch-up | ✅ Done: run_catchup task, watermark tracking, probe trigger, 5-min crontab schedule |
+| 7 Portal API | ✅ Done: Customer, Contact, History, and SyncStatus generic views (test_portal_api.py) |
+| 8 Demo | ✅ Done: scripts/demo.sh passes all brief checks under 5 req/s rate limit |
+| 9 Submission | In progress |

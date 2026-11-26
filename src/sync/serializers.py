@@ -1,24 +1,55 @@
 from rest_framework import serializers
 
-from sync.models import Contact, Customer, FieldChange
+from sync.models import Contact, Customer, FieldChange, Outbox
 
 # camelCase output names follow docs/openapi.yml. Server-owned fields are read-only.
-# ponytail: no syncState (needs an outbox lookup per row); add in phase 7 with a prefetch/annotation.
 
 
 class _SyncFields(serializers.ModelSerializer):
     externalId = serializers.UUIDField(source="external_id", read_only=True)
     salesforceId = serializers.CharField(source="salesforce_id", read_only=True)
+    syncState = serializers.SerializerMethodField(read_only=True)
     createdAt = serializers.DateTimeField(source="created_at", read_only=True)
     createdBy = serializers.CharField(source="created_by", read_only=True)
     updatedAt = serializers.DateTimeField(source="updated_at", read_only=True)
     updatedBy = serializers.CharField(source="updated_by", read_only=True)
 
+    def get_syncState(self, obj) -> str:
+        # Check annotated or prefetched outbox state first to avoid N+1
+        if hasattr(obj, "_sync_state"):
+            return obj._sync_state
+        # Fallback query
+        obj_type = "Customer" if isinstance(obj, Customer) else "Contact"
+        row = (
+            Outbox.objects.filter(object_type=obj_type, record_id=obj.pk)
+            .order_by("-id")
+            .first()
+        )
+        if not row:
+            return "synced"
+        if row.state == Outbox.State.PENDING:
+            return "pending"
+        if row.state == Outbox.State.NEEDS_REVIEW:
+            return "needs_review"
+        return "synced"
+
 
 class CustomerSerializer(_SyncFields):
     class Meta:
         model = Customer
-        fields = ["id", "externalId", "salesforceId", "createdAt", "createdBy", "updatedAt", "updatedBy", "name", "status", "owner"]
+        fields = [
+            "id",
+            "externalId",
+            "salesforceId",
+            "syncState",
+            "createdAt",
+            "createdBy",
+            "updatedAt",
+            "updatedBy",
+            "name",
+            "status",
+            "owner",
+        ]
         read_only_fields = ["id"]
 
 
@@ -27,7 +58,22 @@ class ContactSerializer(_SyncFields):
 
     class Meta:
         model = Contact
-        fields = ["id", "externalId", "salesforceId", "createdAt", "createdBy", "updatedAt", "updatedBy", "fullName", "phone", "email", "city", "owner", "customer"]
+        fields = [
+            "id",
+            "externalId",
+            "salesforceId",
+            "syncState",
+            "createdAt",
+            "createdBy",
+            "updatedAt",
+            "updatedBy",
+            "fullName",
+            "phone",
+            "email",
+            "city",
+            "owner",
+            "customer",
+        ]
         read_only_fields = ["id"]
 
 
@@ -39,6 +85,16 @@ class FieldChangeSerializer(serializers.ModelSerializer):
         model = FieldChange
         fields = ["id", "field", "value", "actor", "source", "occurredAt", "status", "eventId"]
         read_only_fields = fields
+
+
+class SyncStatusSerializer(serializers.Serializer):
+    salesforce = serializers.ChoiceField(choices=["up", "down"])
+    pendingOutboxCount = serializers.IntegerField()
+    oldestPendingAgeSeconds = serializers.FloatField(allow_null=True)
+    needsReviewCount = serializers.IntegerField()
+    portalEditsPerSecond = serializers.FloatField()
+    limiterRate = serializers.IntegerField()
+    lastCatchupAt = serializers.DateTimeField(allow_null=True)
 
 
 class WebhookEventSerializer(serializers.Serializer):

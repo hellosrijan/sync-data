@@ -63,6 +63,10 @@ class SalesforceClient:
         outcome, data = self._send_query("GET", url)
         return outcome, data
 
+    def query_url(self, url: str) -> tuple[ClientOutcome, dict[str, Any]]:
+        """Fetch next page of query results using nextRecordsUrl."""
+        return self._send_query("GET", url)
+
     def _send(self, method: str, url: str, **kwargs) -> ClientOutcome:
         try:
             resp = self._client.request(method, url, headers=self._headers(), **kwargs)

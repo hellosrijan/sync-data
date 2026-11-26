@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from django.conf import settings
+from django.core.exceptions import FieldDoesNotExist
 from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 
@@ -72,11 +73,13 @@ def apply(change: Change) -> Result:
                 _apply_field(change, record, name, value)
                 applied_fields.append(name)
 
-        if created:
+        if created or (change.source == "portal" and change.operation == "create" and not record.created_by):
             record.created_by = change.actor
         if applied_fields:
             record.updated_by = change.actor
         if created or applied_fields:
+            if isinstance(record, Contact) and record.customer_salesforce_id is None:
+                record.customer_salesforce_id = ""
             record.save()
             if change.object_type == "Customer" and record.salesforce_id:
                 # When customer arrives, link waiting contacts (build-plan 3.1.4)
@@ -193,7 +196,11 @@ def _apply_field(change: Change, record: Any, name: str, value: Any) -> None:
                 record.customer = None
                 record.customer_salesforce_id = ""
     else:
-        field_obj = record._meta.get_field(name)
+        try:
+            field_obj = record._meta.get_field(name)
+        except FieldDoesNotExist:
+            return
+
         if value is None and getattr(field_obj, "null", False) is False:
             if hasattr(field_obj, "get_internal_type") and field_obj.get_internal_type() in (
                 "CharField",

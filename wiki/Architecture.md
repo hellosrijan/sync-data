@@ -143,7 +143,7 @@ Inside the portal box there are three smaller boxes, plus Redis and `apply()` si
 - **Outbound task:** sends pending outbox rows to Salesforce (`send_outbound`, `max_retries=0`). Built in phase 5.
 - **Recovery probe:** checks if Salesforce is back every 10 s while down, makes pending rows due on recovery (`probe_salesforce`). Built in phase 5.
 - **Rate recovery and sweep tasks:** recovers limiter rate by +5 req/s every 30 s (`recover_limiter_rate`) and backs up missed wake-ups every 5 s (`sweep_outbound`). Built in phase 5.
-- **Catch-up task:** asks Salesforce what changed, after an outage and every 5 minutes as a safety net. Not built yet (phase 6).
+- **Catch-up task:** asks Salesforce what changed, after an outage and every 5 minutes as a safety net (`run_catchup`, `scheduled_catchup`, built in phase 6).
 - **Shared rate limiter**, the hexagon. *Every* call we make to Salesforce goes through it: sends, retries and catch-up queries. It keeps the total at or under the run rate of 90 req/s, below the 100 req/s cap (Q10). It lives in Redis so that all worker threads and processes share one count. Built in phase 5 (`RateLimiter`). Webhooks don't pass through it, because the brief says they don't count.
 
 ### 3. The three paths
@@ -374,8 +374,8 @@ why Q12 is a stated assumption.
 
 | Service | Runs | Paths |
 |---|---|---|
-| Django web | Webhook endpoint (`POST /api/v1/webhooks/salesforce/`, built), portal API (not built), `apply()` for webhooks and portal saves | A, and the first half of B (edit → outbox) |
-| Dramatiq worker | Dedupe retention task (`purge_expired_change_events`, built), outbound task (`send_outbound`, built), recovery probe (`probe_salesforce`, built), rate recovery (`recover_limiter_rate`, built), backup sweep (`sweep_outbound`, built), shared rate limiter (`RateLimiter`, built), catch-up task (not built) | Dedupe maintenance, second half of B (outbox → Salesforce), and C |
+| Django web | Webhook endpoint (`POST /api/v1/webhooks/salesforce/`, built in phase 3), portal API (Customer, Contact, History, SyncStatus views, built in phase 7), `apply()` for webhooks and portal saves | A, and the first half of B (edit → outbox) |
+| Dramatiq worker | Dedupe retention task (`purge_expired_change_events`, built in phase 3), outbound task (`send_outbound`, built in phase 5), recovery probe (`probe_salesforce`, built in phase 5), rate recovery (`recover_limiter_rate`, built in phase 5), backup sweep (`sweep_outbound`, built in phase 5), shared rate limiter (`RateLimiter`, built in phase 5), catch-up task (`run_catchup`, `scheduled_catchup`, built in phase 6) | Dedupe maintenance, second half of B (outbox → Salesforce), and C |
 
 They never call each other. **What crosses the boundary:** outbox rows in Postgres (the work)
 and a Redis nudge. The worker writes results back to Postgres. A 6-hour outage only backs up the

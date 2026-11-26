@@ -148,6 +148,8 @@ def _handle_request(fake: FakeSalesforce, method: str, url_str: str, body_bytes:
         if m_since:
             try:
                 since = datetime.fromisoformat(m_since.group(1).strip("'\""))
+                if timezone.is_naive(since):
+                    since = timezone.make_aware(since)
             except ValueError:
                 pass
 
@@ -155,19 +157,22 @@ def _handle_request(fake: FakeSalesforce, method: str, url_str: str, body_bytes:
         records, done, next_offset = fake.changed_since(since, offset=offset)
         out_records = []
         for r in records:
-            out_records.append({
+            rec_dict = {
                 "Id": r["salesforce_id"],
                 "SystemModstamp": r["modified_at"].isoformat(),
                 "attributes": {"type": r["object_type"]},
                 **r["fields"],
-            })
+            }
+            if "modified_by" in r:
+                rec_dict["modified_by"] = r["modified_by"]
+            out_records.append(rec_dict)
         resp = {
             "totalSize": len(out_records),
             "done": done,
             "records": out_records,
         }
         if not done:
-            resp["nextRecordsUrl"] = f"/services/data/v60.0/query/?offset={next_offset}"
+            resp["nextRecordsUrl"] = f"/services/data/v60.0/query/?q={quote(q_str)}&offset={next_offset}"
         return 200, {"content-type": "application/json"}, json.dumps(resp).encode("utf-8")
 
     return 404, {"content-type": "application/json"}, b'{"error": "route not found"}'
@@ -177,6 +182,7 @@ def transport_for(fake: FakeSalesforce) -> httpx.MockTransport:
     """Plug into httpx.Client(transport=transport_for(fake)) for network-free testing (4.1.2)."""
     def handler(request: httpx.Request) -> httpx.Response:
         if fake.mode == "down":
+            fake.calls.append((request.method, str(request.url), request.content, timezone.now()))
             raise httpx.ConnectError("fake: down")
         status_code, headers, body = _handle_request(
             fake, request.method, str(request.url), request.content

@@ -40,15 +40,18 @@ template in `.env.example`, same keys in both).
 ```
 src/manage.py
 src/config/   settings, urls (the only file that defines api/v1/)
-src/sync/     the sync app: models, admin, serializers.py, urls.py, permissions.py (IsSalesforceIntegration),
-              services.py (apply and rules core), views.py (WebhookView), client.py (SalesforceClient),
+src/sync/     the sync app: models, admin, serializers.py, pagination.py (cursor pagination),
+              urls.py, permissions.py (IsSalesforceIntegration), services.py (apply and rules core),
+              views.py (WebhookView, Customer/Contact/History views, SyncStatusView), client.py (SalesforceClient),
               limiter.py (RateLimiter), tasks.py (dedupe retention, send_outbound, probe_salesforce,
-              recover_limiter_rate, sweep_outbound), management/commands/create_integration_user.py,
-              tests/ (fakes.py, scenarios.py, test_fakes.py, test_client.py, test_limiter.py, test_outbound.py)
+              run_catchup, scheduled_catchup, recover_limiter_rate, sweep_outbound),
+              management/commands/create_integration_user.py, tests/ (fakes.py, scenarios.py,
+              test_fakes.py, test_client.py, test_limiter.py, test_outbound.py, test_catchup.py, test_portal_api.py)
 src/utils/    api/v1/health/ (DRF RetrieveAPIView), urls.py, serializers.py, rundramatiq override
 docs/         Round1.html (brief), design.md (design doc), build-plan.md (phases + checklist), openapi.yml (API contract), chats/ (session exports), tasks/ (agent-team ledgers)
 wiki/         hand-written GitHub wiki pages (Home, Architecture, Development-Workflow, _Sidebar)
 scripts/build-wiki.sh       builds the wiki: wiki/*.md + README.md + docs/design.md + docs/build-plan.md
+scripts/demo.sh             single-command end-to-end demo under SALESFORCE_RATE_LIMIT=5
 .github/workflows/wiki.yml  publishes the build to the GitHub wiki on push to main
 .claude/                    Claude Code agents, commands, rules, skills, settings: the source of truth
 .opencode/                  opencode (V2) config, agents, commands: wrappers around .claude/
@@ -66,8 +69,9 @@ uv run python src/manage.py check
 uv run python src/manage.py migrate
 uv run python src/manage.py runserver   # web runs on the host, not in compose
 docker compose logs -f worker
-uv run pytest -q                        # tests (190 passed; needs compose services up: real Postgres, Redis)
-uv run pytest -m brief                 # brief-scenario checks (10 passed)
+uv run pytest -q                        # tests (201 passed; needs compose services up: real Postgres, Redis)
+uv run pytest -m brief                 # brief-scenario checks (11 passed)
+bash scripts/demo.sh                   # single-command end-to-end demo under SALESFORCE_RATE_LIMIT=5
 ```
 
 - The `worker` container runs `rundramatiq --reload --reload-use-polling --processes 1 --threads 2`

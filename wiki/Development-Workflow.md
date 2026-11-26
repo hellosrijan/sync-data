@@ -77,10 +77,11 @@ Steps a to g change no git state. Only step h stages and commits.
 ```sh
 docker compose up -d --wait
 uv run pytest -q
-uv run pytest -m brief        # run tests for the brief's required checks (10 tests)
+uv run pytest -m brief        # run tests for the brief's required checks (11 tests)
+bash scripts/demo.sh          # run single-command end-to-end demo at rate limit 5 req/s
 ```
 
-Tests live in `src/<app>/tests/`. `uv run pytest -q` runs them all (190 passed, 10 marked `brief`). The health tests use the real Postgres and Redis from Compose.
+Tests live in `src/<app>/tests/`. `uv run pytest -q` runs them all (201 passed, 11 marked `brief`). The health tests use the real Postgres and Redis from Compose.
 pytest-django creates a separate test database. Salesforce is faked inside the tests
 (`src/sync/tests/fakes.py`, build plan phase 4): no extra app or container.
 

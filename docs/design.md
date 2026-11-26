@@ -1,7 +1,7 @@
 # Design: two-way sync of customer and contact records
 
 Source of truth: [`Round1.html`](Round1.html). Section order follows the brief's outline.
-Status: **design in progress**. Phase 0 is built (Compose stack, Django project). Phase 1 is built:
+Status: **phases 0 to 8 built, phase 9 (submission) in progress**. Phase 0 is built (Compose stack, Django project). Phase 1 is built:
 tasks 1.2 to 1.7 (ledgers T-001 and T-002). That covers the six models and their constraints,
 the audit columns `created_by` and `updated_by`, token authentication, admin, the `api/v1/` URL layout,
 serializers and `GET /api/v1/health/`. Phase 2 is built (ledger T-003): `apply()` (`src/sync/services.py`),
@@ -11,8 +11,13 @@ Phase 4 is built (ledger T-005): `FakeSalesforce` test double (`src/sync/tests/f
 `ThreadingHTTPServer` fixtures, failure modes, and scenario builders (`src/sync/tests/scenarios.py`).
 Phase 5 is built (ledger T-006): `SalesforceClient` (`src/sync/client.py`), Redis atomic token-bucket `RateLimiter`
 (`src/sync/limiter.py`), Dramatiq outbound worker (`send_outbound`), 5-failure down detection, 10s recovery probe,
-and restart-while-down brief check (190 tests passing, 10 marked `brief`).
-Catch-up is not built yet.
+and restart-while-down brief check.
+Phase 6 is built: `run_catchup` task querying Salesforce since watermark minus overlap, field-level echo check,
+watermark commit, and 5-minute periodic schedule.
+Phase 7 is built: Customer, Contact, History, and SyncStatus generic views (`src/sync/views.py`, `src/sync/urls.py`)
+with cursor pagination and syncState annotations.
+Phase 8 is built: `scripts/demo.sh` single-command demo executing the brief's checks under 5 req/s rate limit
+(201 tests passing, 11 marked `brief`).
 Decided: §5 to §9; Q4 to Q9 and Q11 in §1;
 all three metrics in §11. Q1 to Q3, Q10, Q12 and Q13 are recorded as assumptions, and §10 is
 arithmetic on them. Q14 (portal login) is a default assumption from the build plan. Q15 to Q18
@@ -20,7 +25,7 @@ arithmetic on them. Q14 (portal login) is a default assumption from the build pl
 assumptions from phase 2 (T-003). Q19 and Q20 (Contact customer linkage via `customer_salesforce_id`
 and sanitizing `None` to `""` on string fields) are default assumptions from phase 3 (T-004). §3 and §4 are
 set by the build plan ([`build-plan.md`](build-plan.md)) and the API contract
-([`openapi.yml`](openapi.yml)). Still TODO: §12 "anything else we cut".
+([`openapi.yml`](openapi.yml)). §12 documents all out-of-scope and deferred items.
 
 Targets every section must close against: 5 million records; ≤ 30 s sync while both sides are
 up; ≤ 100 requests/sec to the Salesforce record API, retries included; a 6-hour Salesforce
@@ -73,8 +78,8 @@ Questions added while writing this doc (not in the brief):
 | Part | Runs where | Job | Status |
 |---|---|---|---|
 | Salesforce | Client's infrastructure | CRM. Sales users edit here. Has its own database. | Exists. Not ours. |
-| Django web | Django 5.2 on the host (`runserver`) | HTTP entry point: the webhook endpoint (path A) and the portal API (Q6). Serves `GET /api/v1/health/` and `POST /api/v1/webhooks/salesforce/` today. | Webhook endpoint built (phase 3, T-004); portal API not built yet. Portal login: DRF token per user (Q14, default); the Salesforce integration user comes from `manage.py create_integration_user`. |
-| Dramatiq worker | Container `worker` | Runs Dramatiq actors and the dramatiq-crontab scheduler. | Runs dedupe retention actor `purge_expired_change_events` (daily at 02:00, `@cron` in `src/sync/tasks.py`), outbound worker `send_outbound` (with `max_retries=0`), recovery probe `probe_salesforce` (every 10 s, `@interval`), rate recovery `recover_limiter_rate` (every 30 s, `@interval`), backup sweep `sweep_outbound` (every 5 s, `@interval`), and dramatiq-crontab's heartbeat. Catch-up sync actor not built yet. |
+| Django web | Django 5.2 on the host (`runserver`) | HTTP entry point: the webhook endpoint (path A) and the portal API (path B entry, Customer, Contact, History, and SyncStatus views; built in phases 3 and 7). Serves `GET /api/v1/health/`, `POST /api/v1/webhooks/salesforce/`, Customer/Contact endpoints, and `GET /api/v1/sync/status/`. | Webhook endpoint built (phase 3, T-004); portal API built (phase 7). Portal login: DRF token per user (Q14, default); the Salesforce integration user comes from `manage.py create_integration_user`. |
+| Dramatiq worker | Container `worker` | Runs Dramatiq actors and the dramatiq-crontab scheduler. | Runs dedupe retention actor `purge_expired_change_events` (daily at 02:00, `@cron` in `src/sync/tasks.py`), outbound worker `send_outbound` (with `max_retries=0`), recovery probe `probe_salesforce` (every 10 s, `@interval`), catch-up sync actors (`run_catchup`, `scheduled_catchup` every 5 min via `@interval`, built in phase 6), rate recovery `recover_limiter_rate` (every 30 s, `@interval`), backup sweep `sweep_outbound` (every 5 s, `@interval`), and dramatiq-crontab's heartbeat. |
 | Postgres 17 | Container `db` | Portal copy of the records. | Running. Six models, migrations `0001_initial` and `0002_audit_columns` (§4). |
 | Redis 7 | Container `redis` | Dramatiq broker (task messages), wake-up signal for the outbox, shared rate-limiter count, scheduler lock, health ping. | Running, AOF on. |
 
@@ -101,6 +106,9 @@ Interface on each side:
 |---|---|---|---|---|
 | A. Webhook | Salesforce | Django web endpoint | HTTPS `POST` with DRF token authentication (Q11). `POST /api/v1/webhooks/salesforce/` (`openapi.yml`). | `eventId`, `recordId`, `objectType`, `occurredAt`, `changedBy`, `changedFields` (brief sample) |
 | B. Outbound call | Dramatiq worker | Salesforce record API | HTTPS update via Salesforce's documented record API; creates as upsert by external ID (assumption Q13) | The fields the portal user changed, at their current values (§6). Creates also carry our record ID as the external ID. |
+| B (ingress). Portal API | Portal user / frontend | Django web endpoint | HTTPS `GET`, `POST`, `PATCH` with DRF token authentication (Q14). Routes under `/api/v1/customer/` and `/api/v1/contact/` (`openapi.yml`). | CustomerWrite / ContactWrite schemas; responses include `syncState` (`synced`, `pending`, `needs_review`) |
+| C. Catch-up | Dramatiq worker | Salesforce query API | HTTPS query for records changed since watermark minus overlap (`run_catchup`, assumption Q3) | SOQL query returning up to 2,000 records per page |
+| Status | Staff operator | Django web endpoint | `GET /api/v1/sync/status/` (`IsAdminUser` staff auth) | JSON: Salesforce state, outbox counts, limiter rate, portal edits/s |
 | Health | Operator | Django web | `GET /api/v1/health/` (public): 200 if Postgres and Redis both answer, else 503 | JSON: `postgres`, `redis` |
 
 URL conventions (decided by the user): `config/urls.py` is the root URLconf and the only place that
@@ -121,21 +129,22 @@ serializers, skills and the chat-export change. Phase 2 built (T-003): `apply()`
 built (T-004): `WebhookView`, `WebhookEventSerializer`, customer linkage, and dedupe retention task. Phase 4
 built (T-005): `FakeSalesforce` test double, `MockTransport`, failure modes, and scenario builders. Phase 5
 built (T-006): `SalesforceClient`, Redis `RateLimiter` token bucket, outbound worker (`send_outbound`),
-down detection, 10s recovery probe, and restart-while-down brief test (190 tests passing, 10 marked `brief`).
-Not built: phases 6 to 9. Full phases, tasks and subtasks: [`build-plan.md`](build-plan.md).
+down detection, 10s recovery probe, and restart-while-down brief test. Phase 6 built: `run_catchup`
+task and watermark tracking. Phase 7 built: portal API generic views. Phase 8 built: `scripts/demo.sh`
+(201 tests passing, 11 marked `brief`). Full phases, tasks and subtasks: [`build-plan.md`](build-plan.md).
 
 Riskiest first:
 
-| # | Subproblem | Why at this point |
-|---|---|---|
-| 1 | **Foundations:** apps, models, admin, the API contract | Everything else needs the tables and constraints. The dedupe and outbox guarantees are database constraints, so they come first. |
-| 2 | **`apply()`:** duplicate, out-of-order, per-field merge, history, sync loop | **Riskiest.** Every rule the brief checks runs here. If it's wrong, nothing on top can be right. It needs no network, so it's the cheapest place to prove the rules. |
-| 3 | **Inbound webhook** (path A) | A thin, checked entry into `apply()`. Built in phase 3 (T-004). |
-| 4 | **Test scenarios:** a fake Salesforce inside the test suite (no extra app or container) | Makes outages, 429s, rejections, duplicates and echoes reproducible before building outbound. The brief: *"call a fake CRM you write yourself"*. |
-| 5 | **Outbound and the outage** (path B): limiter, retries, down detection, restart safety | **Second riskiest.** This is where work gets lost if we're wrong: the 6-hour outage, retries counted in the cap, surviving restarts. |
-| 6 | **Catch-up** (path C) | Depends on 4 and 5. Recovers webhooks missed during an outage. |
-| 7 | **Portal API** | Generic views over `apply()`; low risk |
-| 8 | **Demo** | The brief's four checks end to end, with a visible cap |
+| # | Subproblem | Why at this point | Status |
+|---|---|---|---|
+| 1 | **Foundations:** apps, models, admin, the API contract | Everything else needs the tables and constraints. The dedupe and outbox guarantees are database constraints, so they come first. | Built (phase 1: T-001, T-002) |
+| 2 | **`apply()`:** duplicate, out-of-order, per-field merge, history, sync loop | **Riskiest.** Every rule the brief checks runs here. If it's wrong, nothing on top can be right. It needs no network, so it's the cheapest place to prove the rules. | Built (phase 2: T-003) |
+| 3 | **Inbound webhook** (path A) | A thin, checked entry into `apply()`. Built in phase 3 (T-004). | Built (phase 3: T-004) |
+| 4 | **Test scenarios:** a fake Salesforce inside the test suite (no extra app or container) | Makes outages, 429s, rejections, duplicates and echoes reproducible before building outbound. The brief: *"call a fake CRM you write yourself"*. | Built (phase 4: T-005) |
+| 5 | **Outbound and the outage** (path B): limiter, retries, down detection, restart safety | **Second riskiest.** This is where work gets lost if we're wrong: the 6-hour outage, retries counted in the cap, surviving restarts. | Built (phase 5: T-006) |
+| 6 | **Catch-up** (path C) | Depends on 4 and 5. Recovers webhooks missed during an outage. | Built (phase 6: `run_catchup`, `scheduled_catchup`) |
+| 7 | **Portal API** | Generic views over `apply()`; low risk | Built (phase 7: Customer, Contact, History, SyncStatus) |
+| 8 | **Demo** | The brief's four checks end to end, with a visible cap | Built (phase 8: `scripts/demo.sh`) |
 
 ## 4. Data we store
 
@@ -361,8 +370,12 @@ How it drains:
 
 1. While Salesforce is down, outbound calls fail and their outbox rows stay pending. A probe
    checks every ~10 s whether Salesforce is back.
-2. On recovery, catch-up runs first: it fetches what changed in Salesforce since the watermark and
-   applies it. Same-field conflicts are settled before we send anything. Catch-up also runs every 5 min as a safety net (path C, Architecture).
+2. On recovery, catch-up runs first: `probe_salesforce` triggers `run_catchup` (`src/sync/tasks.py`), which
+   queries Salesforce for records changed since `watermark - overlap` (5-minute overlap) through the shared
+   limiter and applies each record via `apply()` with deterministic event IDs (`f"{sf_id}:{modstamp_str}"`).
+   Field-level echo checks compare against `field_meta[f].sf_value` and filter out our own updates. The
+   watermark advances only upon transaction commit per page. Same-field conflicts are settled before we
+   send anything. Catch-up also runs every 5 minutes (`scheduled_catchup`) as a safety net (path C, Architecture).
 3. Then the outbox drains at R = 90 req/s through the shared limiter. Several edits to one record
    are merged into one call.
 
@@ -420,25 +433,25 @@ Full reconcile, for comparison (Q3): 5,000,000 records ÷ 2,000 per query = 2,50
 
 ## 12. Left out of this weekend's work
 
-Out of scope per the brief: deletes, Salesforce login screens, a visual UI, a second region, a
-load test against real Salesforce.
+Out of scope per the brief:
+- Deletes (explicitly out of scope per brief).
+- Salesforce login screens and a visual user interface (REST API only, token authentication per user).
+- A second region (single-region deployment).
+- A load test against real Salesforce (tested against `FakeSalesforce` in-process test double and local HTTP server fixture).
 
-Left out for now:
-
+Left out of this implementation:
 - Bulk or mass updates (Q12). The brief doesn't mention them. We assume interactive edits only,
   so there's no outbox priority and no batch API.
+- Automated tests in GitHub Actions CI (`.github/workflows/wiki.yml` publishes the wiki only; tests run locally via uv/pytest).
+- Implementation language: the brief mentions TypeScript on Node.js 20 or newer as optional context. This project's code
+  is Python 3.14 with Django 5.2. This is the user's decision, recorded as a deviation.
 
-- CI runs only the wiki publish (`.github/workflows/wiki.yml`). Tests are not run in CI yet.
-- Optional code language: the brief says TypeScript on Node.js 20 or newer. This project's code
-  is Python 3.14 with Django. This is the user's decision, recorded as a deviation. It is not a
-  design choice.
-
-Built in scope: outbound worker, shared rate limiter, outage probe, and restart-while-down brief test (phase 5, T-006),
-FakeSalesforce test double and scenarios (phase 4, T-005), inbound webhook endpoint and dedupe retention (phase 3, T-004),
-`apply()` rules core (phase 2, T-003), foundations, models, admin and auth (phase 1, T-001, T-002).
-Not built yet (in scope, not left out): catch-up (phase 6), portal API views (phase 7), and the demo script (phase 8).
-The sync rules themselves in §5 to §9 are built at the database level in `apply()` (`src/sync/services.py`, phase 2, T-003),
-exposed inbound via `WebhookView` (`src/sync/views.py`, phase 3, T-004), and dispatched outbound via `send_outbound`
-(`src/sync/tasks.py`, phase 5, T-006).
-
-TODO: anything else we cut.
+Built in scope (Phases 1 to 8 complete):
+- Phase 1: Foundations, models (`Customer`, `Contact`, `ChangeEvent`, `FieldChange`, `Outbox`, `SyncState`), audit columns, admin, token auth, URL layout, serializers.
+- Phase 2: `apply()` rules core: duplicate check, out-of-order handling, per-field merge, history logging, and sync-loop prevention.
+- Phase 3: Inbound webhook endpoint (`POST /api/v1/webhooks/salesforce/`), `WebhookEventSerializer`, asynchronous customer linkage, and dedupe retention task.
+- Phase 4: `FakeSalesforce` test double (`src/sync/tests/fakes.py`), `MockTransport` and `ThreadingHTTPServer` fixtures, failure modes, and scenario builders (`src/sync/tests/scenarios.py`).
+- Phase 5: `SalesforceClient` (`src/sync/client.py`), Redis atomic token-bucket `RateLimiter` (`src/sync/limiter.py`), Dramatiq outbound worker (`send_outbound`), 5-failure down detection, 10s recovery probe, and restart-while-down brief test.
+- Phase 6: Catch-up path C (`run_catchup`), watermark tracking, recovery probe trigger, and 5-minute periodic `scheduled_catchup` safety net.
+- Phase 7: Portal REST API generic views (`CustomerListCreateView`, `CustomerDetailView`, `CustomerHistoryListView`, `ContactListCreateView`, `ContactDetailView`, `ContactHistoryListView`, `SyncStatusView`), cursor pagination (`RecordCursorPagination`, `HistoryCursorPagination`), and `syncState` serialization.
+- Phase 8: Single-command demo script (`scripts/demo.sh`) running all brief checks under a 5 req/s rate limit (201 tests passing, 11 marked `brief`).

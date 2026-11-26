@@ -50,8 +50,9 @@ def test_ac_1_6_3_field_set_equals_openapi(ser, schema):
 
 
 @pytest.mark.parametrize("ser", [CustomerSerializer, ContactSerializer])
-def test_ac_1_6_3_sync_state_absent_on_purpose(ser):
-    assert "syncState" not in ser().fields
+def test_ac_7_1_1_sync_state_present(ser):
+    assert "syncState" in ser().fields
+    assert ser().fields["syncState"].read_only
 
 
 @pytest.mark.parametrize(
@@ -97,7 +98,7 @@ def test_ac_1_7_audit_fields_present_and_read_only(ser):
     s = ser()
     for n in AUDIT:
         assert n in s.fields and s.fields[n].read_only, n
-    assert "syncState" not in s.fields
+    assert "syncState" in s.fields and s.fields["syncState"].read_only
 
 
 @pytest.mark.django_db

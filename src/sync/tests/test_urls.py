@@ -28,7 +28,7 @@ def test_ac_1_6_2_app_names():
 
     assert u.app_name == "utils" and s.app_name == "sync"
     assert [p.name for p in u.urlpatterns] == ["health"]
-    assert [p.name for p in s.urlpatterns] == ["salesforce-webhook"]
+    assert "salesforce-webhook" in [p.name for p in s.urlpatterns]
 
 
 def test_ac_1_6_4_every_named_route_reverses():
@@ -38,7 +38,8 @@ def test_ac_1_6_4_every_named_route_reverses():
     for mod in (u, s):
         for p in mod.urlpatterns:
             if p.name:
-                assert reverse(f"{mod.app_name}:{p.name}")
+                kwargs = {"pk": 1} if "<int:pk>" in str(p.pattern) else {}
+                assert reverse(f"{mod.app_name}:{p.name}", kwargs=kwargs)
     # and the root resolver mounts utils under api/v1/
     assert resolve("/api/v1/health/").view_name == "utils:health"
     with pytest.raises(NoReverseMatch):
