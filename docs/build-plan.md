@@ -274,7 +274,10 @@ reports `duplicate`.
 Owner: Phoebe → Ross. Depends on: 2.1.
 - [x] 2.2.1 Salesforce source: work out the changed fields **inside the lock**, comparing each
   value with `field_meta[f].sf_value` (Q2). *Done 2026-11-27.*
-- [x] 2.2.2 Echo: if `actor` is the integration user, record the change as `echo` and apply nothing. The setting is `SALESFORCE_INTEGRATION_USER` with a placeholder value (`defaulted`, Q15). *Done 2026-11-27.*
+- [x] 2.2.2 Echo: if `actor` is the integration user, record the change as `echo` and apply nothing
+  to the record column, history status or outbox — `field_meta[f].sf_value` is still kept in sync
+  with the echoed value (gated by `_is_newer`, T-007). The setting is `SALESFORCE_INTEGRATION_USER`
+  with a placeholder value (`defaulted`, Q15). *Done 2026-11-27.*
 - [x] 2.2.3 For each changed field: always write a `FieldChange`. Apply it if `occurred_at` is newer
   than the field's stored time, otherwise mark it `superseded`. An exact tie goes to Salesforce. *Done 2026-11-27.*
 - [x] 2.2.4 Update `field_meta`: `at`, `source`, `by`, and `sf_value` for Salesforce changes. Also
@@ -394,32 +397,32 @@ the configured cap.
 
 ### 5.1 `SalesforceClient`
 Owner: Phoebe → Ross. Depends on: 1.2, 4.1.
-- [ ] 5.1.1 An `httpx` client: `upsert(object_type, external_id, fields)` and `update(...)`.
-- [ ] 5.1.2 Maps responses to outcomes: ok, unreachable, throttled (with `Retry-After`), rejected,
-  auth failure.
-- [ ] 5.1.3 Client tests run against `FakeSalesforce` through `httpx.MockTransport` (4.1.2).
+- [x] 5.1.1 An `httpx` client: `upsert(object_type, external_id, fields)` and `update(...)`. *Done 2026-11-27.*
+- [x] 5.1.2 Maps responses to outcomes: ok, unreachable, throttled (with `Retry-After`), rejected,
+  auth failure. *Done 2026-11-27.*
+- [x] 5.1.3 Client tests run against `FakeSalesforce` through `httpx.MockTransport` (4.1.2). *Done 2026-11-27.*
 
 **Done when:** each outcome is mapped correctly against `FakeSalesforce`.
 
 ### 5.2 Shared rate limiter
 Owner: Phoebe → Ross. Depends on: 5.1.
-- [ ] 5.2.1 A Redis token bucket (Lua, atomic) at `SALESFORCE_RATE_LIMIT`, shared by every worker
-  thread and process, and used for sends, retries, probes and catch-up queries.
-- [ ] 5.2.2 On a 429: pause until `Retry-After`, halve the rate, then add 5 req/s every 30 s back
-  up to the limit.
+- [x] 5.2.1 A Redis token bucket (Lua, atomic) at `SALESFORCE_RATE_LIMIT`, shared by every worker
+  thread and process, and used for sends, retries, probes and catch-up queries. *Done 2026-11-27.*
+- [x] 5.2.2 On a 429: pause until `Retry-After`, halve the rate, then add 5 req/s every 30 s back
+  up to the limit. *Done 2026-11-27.*
 
 **Done when:** with the limit at 5 req/s and an injected clock, 100 calls take ≥ 19 s (no
 window exceeds the limit); a 429 halves the rate.
 
 ### 5.3 Outbound task
 Owner: Phoebe → Ross. Depends on: 5.2, 2.3.
-- [ ] 5.3.1 A Dramatiq actor with `max_retries=0` that claims due rows (`FOR UPDATE SKIP LOCKED`,
-  `lease_until`), reads the record's **current** values for the fields, and sends.
-- [ ] 5.3.2 Outcome handling per design §6: `sent` and store the Salesforce ID; backoff
+- [x] 5.3.1 A Dramatiq actor with `max_retries=0` that claims due rows (`FOR UPDATE SKIP LOCKED`,
+  `lease_until`), reads the record's **current** values for the fields, and sends. *Done 2026-11-27.*
+- [x] 5.3.2 Outcome handling per design §6: `sent` and store the Salesforce ID; backoff
   1/2/4/8… s capped at 60 s; 429 → slow the limiter down; 400 → `needs_review`; 401/403 →
-  stop and alert.
-- [ ] 5.3.3 Wake-up: a Redis nudge on commit (`transaction.on_commit`), plus a 5-second crontab
-  sweep.
+  stop and alert. *Done 2026-11-27.*
+- [x] 5.3.3 Wake-up: a Redis nudge on commit (`transaction.on_commit`), plus a 5-second crontab
+  sweep. *Done 2026-11-27.*
 
 **Done when:**
 - a portal edit is in the fake within 30 s;
@@ -429,18 +432,18 @@ Owner: Phoebe → Ross. Depends on: 5.2, 2.3.
 
 ### 5.4 Down detection and probe
 Owner: Phoebe → Ross. Depends on: 5.3.
-- [ ] 5.4.1 After 5 consecutive unreachable failures, `SyncState` says `down` and sending stops.
-- [ ] 5.4.2 A probe every 10 s. On success: `up`, trigger catch-up (phase 6), then make every
-  pending row due.
+- [x] 5.4.1 After 5 consecutive unreachable failures, `SyncState` says `down` and sending stops. *Done 2026-11-27.*
+- [x] 5.4.2 A probe every 10 s. On success: `up`, trigger catch-up (phase 6), then make every
+  pending row due. *Done 2026-11-27.*
 
 **Done when:** with `FakeSalesforce` in `down` mode, the state goes `down` after 5 failures; switched
 back to `up`, the state goes `up` within 10 s (injected clock) and the drain starts.
 
 ### 5.5 Restart-while-down test (brief check)
 Owner: Ross. Depends on: 5.4.
-- [ ] 5.5.1 With the local-server fake (4.1.3) in `down` mode: make portal edits, run the outbound
+- [x] 5.5.1 With the local-server fake (4.1.3) in `down` mode: make portal edits, run the outbound
   pass in a **separate worker process**, kill it, start a new one, switch the fake to `up`, and
-  check every edit arrives. Marked `brief`.
+  check every edit arrives. Marked `brief`. *Done 2026-11-27.*
 
 **Done when:** that test passes. This is one of the brief's four demo checks.
 
@@ -578,7 +581,7 @@ checkboxes after every task.
 | 2 `apply()` | ✅ Done: `apply()`, `Change`/`Result`, outbox + sync-loop rule built and verified (T-003, 140 tests, 7 `brief`-marked, 15 concurrency re-runs clean) |
 | 3 Inbound webhook | ✅ Done: WebhookView, WebhookEventSerializer, token auth, customer linkage, dedupe purge task (T-004, 160 tests, 8 `brief`-marked) |
 | 4 Test scenarios | ✅ Done: FakeSalesforce double (fakes.py), MockTransport, failure modes, scenarios (T-005, 171 tests, 9 `brief`-marked) |
-| 5 Outbound and outage | Not started |
+| 5 Outbound and outage | ✅ Done: SalesforceClient, Redis limiter, outbound worker, probe, restart test (T-006, 190 tests, 10 `brief`-marked) |
 | 6 Catch-up | Not started |
 | 7 Portal API | Not started |
 | 8 Demo | Not started |

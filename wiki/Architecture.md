@@ -138,11 +138,13 @@ Inside the portal box there are three smaller boxes, plus Redis and `apply()` si
 
 **Redis**, mainly a doorbell. When a row lands in the outbox, Redis tells the worker "there's work". If Redis lost that message, no work would be lost, because the outbox in Postgres still holds the row. That's why it's labelled *wake-up signal* and not *queue*. Redis also holds the shared limiter count and Dramatiq's own task messages, but no pending calls.
 
-**Dramatiq worker**, the background process that talks to Salesforce. It has four parts:
+**Dramatiq worker**, the background process that talks to Salesforce. It has these parts:
 - **Dedupe retention task:** purges `ChangeEvent` rows older than 7 days (daily at 02:00, `@cron` in `src/sync/tasks.py`). Built in phase 3.
-- **Outbound task:** sends pending outbox rows to Salesforce.
-- **Catch-up task:** asks Salesforce what changed, after an outage and every 5 minutes as a safety net.
-- **Shared rate limiter**, the hexagon. *Every* call we make to Salesforce goes through it: sends, retries and catch-up queries. It keeps the total at or under the run rate of 90 req/s, below the 100 req/s cap (Q10). It lives in Redis so that all worker threads and processes share one count. Webhooks don't pass through it, because the brief says they don't count.
+- **Outbound task:** sends pending outbox rows to Salesforce (`send_outbound`, `max_retries=0`). Built in phase 5.
+- **Recovery probe:** checks if Salesforce is back every 10 s while down, makes pending rows due on recovery (`probe_salesforce`). Built in phase 5.
+- **Rate recovery and sweep tasks:** recovers limiter rate by +5 req/s every 30 s (`recover_limiter_rate`) and backs up missed wake-ups every 5 s (`sweep_outbound`). Built in phase 5.
+- **Catch-up task:** asks Salesforce what changed, after an outage and every 5 minutes as a safety net. Not built yet (phase 6).
+- **Shared rate limiter**, the hexagon. *Every* call we make to Salesforce goes through it: sends, retries and catch-up queries. It keeps the total at or under the run rate of 90 req/s, below the 100 req/s cap (Q10). It lives in Redis so that all worker threads and processes share one count. Built in phase 5 (`RateLimiter`). Webhooks don't pass through it, because the brief says they don't count.
 
 ### 3. The three paths
 
@@ -195,7 +197,7 @@ The box says *dedupe · lock · history · per-field newest wins · outbox*. In 
 
 1. **Dedupe:** try to record the change's ID in a nested savepoint (`transaction.atomic()`). If it's already there, this is a duplicate, so return `duplicate` without poisoning the transaction and stop (no changes made).
 2. **Lock** the record (`SELECT … FOR UPDATE`), creating it if it's a new Salesforce record (`get_or_create`). An unknown portal pk or an unknown Salesforce update raises `UnknownRecord` and rolls back (Q16).
-3. **Echo check:** if the change came from Salesforce or catch-up and its actor is *our integration user* (`settings.SALESFORCE_INTEGRATION_USER`), it's our own update coming back: record history as `echo`, apply nothing to the record, and stop (Q15). An echo never creates a record (Q17).
+3. **Echo check:** if the change came from Salesforce or catch-up and its actor is *our integration user* (`settings.SALESFORCE_INTEGRATION_USER`), it's our own update coming back: record history as `echo` and apply nothing to the record column, history status or outbox, and stop (Q15). `field_meta.sf_value` is still updated to the echoed value, gated by the same newest-wins check used everywhere else, so a later genuine Salesforce change compares correctly instead of looking unchanged (T-007). An echo never creates a record (Q17).
 4. **For each changed field** (filtered by comparing against `field_meta.sf_value` for Salesforce and catch-up):
    - always write a `field_change` history row;
    - if the change is newer than that field's stored time, make it the current value and update `field_meta` (`at`, `source`, `by`, and `sf_value` on Salesforce changes);
@@ -248,7 +250,8 @@ one Postgres transaction:
  1. Dedupe     INSERT event_id INTO change_event in savepoint (unique). Conflict → duplicate: return OK.
  2. Lock       SELECT record ... FOR UPDATE (creates record on salesforce create; raises UnknownRecord on missing update/portal record)
  3. Echo       source in (salesforce, catch-up) and actor = settings.SALESFORCE_INTEGRATION_USER →
-               record history with status echo, apply nothing, stop (echo never creates a record).
+               record history with status echo, apply nothing to the record/outbox, stop (echo
+               never creates a record). field_meta.sf_value is still refreshed, gated by newest-wins.
  4. Per field  filter changed fields against field_meta.sf_value for salesforce/catch-up
                always INSERT field_change(record, field, value, actor, occurred_at, source, status)
                occurred_at > field's stored time → becomes current (applied), updates field_meta
@@ -372,7 +375,7 @@ why Q12 is a stated assumption.
 | Service | Runs | Paths |
 |---|---|---|
 | Django web | Webhook endpoint (`POST /api/v1/webhooks/salesforce/`, built), portal API (not built), `apply()` for webhooks and portal saves | A, and the first half of B (edit → outbox) |
-| Dramatiq worker | Dedupe retention task (`purge_expired_change_events`, built), outbound task (not built), catch-up task (not built), shared limiter (not built) | Dedupe maintenance, second half of B (outbox → Salesforce), and C |
+| Dramatiq worker | Dedupe retention task (`purge_expired_change_events`, built), outbound task (`send_outbound`, built), recovery probe (`probe_salesforce`, built), rate recovery (`recover_limiter_rate`, built), backup sweep (`sweep_outbound`, built), shared rate limiter (`RateLimiter`, built), catch-up task (not built) | Dedupe maintenance, second half of B (outbox → Salesforce), and C |
 
 They never call each other. **What crosses the boundary:** outbox rows in Postgres (the work)
 and a Redis nudge. The worker writes results back to Postgres. A 6-hour outage only backs up the

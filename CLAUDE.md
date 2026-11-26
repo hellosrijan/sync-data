@@ -41,8 +41,10 @@ template in `.env.example`, same keys in both).
 src/manage.py
 src/config/   settings, urls (the only file that defines api/v1/)
 src/sync/     the sync app: models, admin, serializers.py, urls.py, permissions.py (IsSalesforceIntegration),
-              services.py (apply and rules core), views.py (WebhookView), tasks.py (dedupe retention),
-              management/commands/create_integration_user.py, tests/ (fakes.py, scenarios.py, test_fakes.py)
+              services.py (apply and rules core), views.py (WebhookView), client.py (SalesforceClient),
+              limiter.py (RateLimiter), tasks.py (dedupe retention, send_outbound, probe_salesforce,
+              recover_limiter_rate, sweep_outbound), management/commands/create_integration_user.py,
+              tests/ (fakes.py, scenarios.py, test_fakes.py, test_client.py, test_limiter.py, test_outbound.py)
 src/utils/    api/v1/health/ (DRF RetrieveAPIView), urls.py, serializers.py, rundramatiq override
 docs/         Round1.html (brief), design.md (design doc), build-plan.md (phases + checklist), openapi.yml (API contract), chats/ (session exports), tasks/ (agent-team ledgers)
 wiki/         hand-written GitHub wiki pages (Home, Architecture, Development-Workflow, _Sidebar)
@@ -64,8 +66,8 @@ uv run python src/manage.py check
 uv run python src/manage.py migrate
 uv run python src/manage.py runserver   # web runs on the host, not in compose
 docker compose logs -f worker
-uv run pytest -q                        # tests (171 passed; needs compose services up: real Postgres, Redis)
-uv run pytest -m brief                 # brief-scenario checks (9 passed)
+uv run pytest -q                        # tests (190 passed; needs compose services up: real Postgres, Redis)
+uv run pytest -m brief                 # brief-scenario checks (10 passed)
 ```
 
 - The `worker` container runs `rundramatiq --reload --reload-use-polling --processes 1 --threads 2`

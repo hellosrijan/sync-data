@@ -84,6 +84,15 @@ def record_state(pk):
     }
 
 
+def without_sf_value(state):
+    """record_state minus field_meta[*].sf_value, the one key an echo may change (T-007, AC2(c))."""
+    record = dict(state["record"])
+    record["field_meta"] = {
+        name: {k: v for k, v in meta.items() if k != "sf_value"} for name, meta in record["field_meta"].items()
+    }
+    return {**state, "record": record}
+
+
 def run_in_threads(jobs):
     """Start one thread per job behind a barrier. Each thread closes its own DB connection in a
     finally. Exceptions are collected and re-raised in the caller; nothing is swallowed."""
@@ -308,7 +317,10 @@ def test_ac_2_2_2_integration_user_echo_writes_history_only(source):
     change = sf_change("003F01", {"phone": "999", "city": "Echoed"}, T3,
                        actor=INTEGRATION_USER, source=source)
     assert apply(change) == Result(outcome="echo", applied_fields=[])
-    assert record_state(contact.pk) == state
+    # T-007: an echo may change field_meta[f].sf_value and nothing else on the record (AC2(a)-(c)).
+    assert without_sf_value(record_state(contact.pk)) == without_sf_value(state)
+    meta = reload(contact.pk).field_meta
+    assert (meta["phone"]["sf_value"], meta["city"]["sf_value"]) == ("999", "Echoed")
     echoes = FieldChange.objects.filter(event_id=change.event_id)
     assert sorted(echoes.values_list("field", flat=True)) == ["city", "phone"]
     assert {e.status for e in echoes} == {"echo"}
@@ -323,6 +335,47 @@ def test_ac_2_2_2_portal_change_with_integration_actor_is_not_echo():
     result = apply(portal_change(contact.pk, {"city": "Portal"}, T2, actor=INTEGRATION_USER))
     assert result == Result(outcome="applied", applied_fields=["city"])
     assert Outbox.objects.filter(record_id=contact.pk, state="pending").count() == 1
+
+
+# --- T-007: an echo updates field_meta sf_value (V-001 critical finding 1) -----------------------
+
+@db
+@brief
+@override_settings(SALESFORCE_INTEGRATION_USER=INTEGRATION_USER)
+def test_ac3_t007_portal_edit_echo_then_salesforce_revert_is_applied():
+    # Baseline is "Delhi" so sf_value == "Delhi" before the portal edit. Without the echo fix the
+    # later Salesforce "Delhi" compares equal to sf_value and returns no_change (the bug).
+    contact = sf_contact("003T01", city="Delhi")
+    assert apply(portal_change(contact.pk, {"city": "Noida"}, T1)).outcome == "applied"
+    assert Outbox.objects.filter(record_id=contact.pk, state="pending").count() == 1
+
+    echo = sf_change("003T01", {"city": "Noida"}, T2, actor=INTEGRATION_USER)
+    assert apply(echo) == Result(outcome="echo", applied_fields=[])
+    assert reload(contact.pk).field_meta["city"]["sf_value"] == "Noida"
+
+    revert = sf_change("003T01", {"city": "Delhi"}, T3, actor="sf-user")
+    assert apply(revert) == Result(outcome="applied", applied_fields=["city"])
+    record = reload(contact.pk)
+    assert record.city == "Delhi"
+    kept = FieldChange.objects.get(event_id=revert.event_id)
+    assert (kept.field, kept.value, kept.status) == ("city", "Delhi", "applied")
+
+
+@db
+@override_settings(SALESFORCE_INTEGRATION_USER=INTEGRATION_USER)
+def test_ac4_t007_older_echo_does_not_overwrite_newer_salesforce_value():
+    contact = sf_contact("003T02")                         # city "Old"
+    assert apply(sf_change("003T02", {"city": "Delhi"}, T2)).outcome == "applied"
+    before = reload(contact.pk)
+    assert before.field_meta["city"]["sf_value"] == "Delhi"
+
+    echo = sf_change("003T02", {"city": "Noida"}, T1, actor=INTEGRATION_USER)   # earlier than T2
+    assert apply(echo) == Result(outcome="echo", applied_fields=[])
+    after = reload(contact.pk)
+    assert after.field_meta["city"]["sf_value"] == "Delhi"     # _is_newer gate held
+    assert after.field_meta["city"] == before.field_meta["city"]
+    assert after.city == before.city == "Delhi"
+    assert FieldChange.objects.get(event_id=echo.event_id).status == "echo"
 
 
 def test_ac_2_2_2_setting_key_exists_in_settings_env_and_env_example():
@@ -646,9 +699,8 @@ def _url_strings(patterns):
             yield from _url_strings(p.url_patterns)
 
 
-def test_ac_2_6_no_outbound_client_or_portal_views_in_this_phase():
-    # Don't build ahead: outbound client (phase 5) and portal views (phase 7) not built yet
-    assert not (ROOT / "src" / "sync" / "client.py").exists()
+def test_ac_2_6_no_portal_views_in_this_phase():
+    # Don't build ahead: portal views (phase 7) not built yet
     assert not any("api/v1/customer" in s.lower() for s in _url_strings(get_resolver().url_patterns))
 
 

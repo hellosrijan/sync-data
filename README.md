@@ -2,15 +2,16 @@
 
 Two-way sync of customer and contact records between Salesforce (the client's CRM) and the
 Tequity operations portal (Postgres). Salesforce calls us with webhooks; we call the Salesforce
-record API from a background worker, with a target cap of 100 requests/sec (the cap is not built
-yet). Design targets: 5 million
+record API from a background worker, with a target cap of 100 requests/sec (built in phase 5 via
+Redis token-bucket rate limiter at 90 req/s). Design targets: 5 million
 records, a 30-second sync window while both sides are up, and surviving a 6-hour Salesforce outage.
 The brief is in [`docs/Round1.html`](docs/Round1.html).
 
-Status: phases 0 to 4 are built. The models, admin, token authentication, URL layout, serializers,
+Status: phases 0 to 5 are built. The models, admin, token authentication, URL layout, serializers,
 `apply()` (`src/sync/services.py`), the inbound webhook endpoint (`POST /api/v1/webhooks/salesforce/`),
-customer linkage, dedupe retention task, `FakeSalesforce` test double, and scenario builders are built (171 tests passing, including 9 marked `brief`).
-The outbound worker and catch-up are not built yet.
+customer linkage, dedupe retention task, `FakeSalesforce` test double, scenario builders, `SalesforceClient`,
+Redis token-bucket rate limiter, outbound sync worker (`send_outbound`), down detection, and 10s recovery probe are built (190 tests passing, including 10 marked `brief`).
+Catch-up is not built yet.
 The build plan and its checklist are in [`docs/build-plan.md`](docs/build-plan.md).
 
 ## Stack
@@ -65,8 +66,9 @@ The `worker` container runs two processes:
 
 If either process exits, the container exits and `restart: unless-stopped` brings both back.
 `docker compose logs -f worker` shows a heartbeat line every minute when both are healthy (dramatiq-crontab's
-heartbeat actor). The sync app's daily dedupe retention actor (`purge_expired_change_events`, daily at 02:00)
-runs here; outbound and catch-up sync actors are not built yet.
+heartbeat actor). The sync app's daily dedupe retention actor (`purge_expired_change_events`, daily at 02:00),
+outbound sync worker (`send_outbound`), recovery probe (`probe_salesforce`), rate recovery actor (`recover_limiter_rate`),
+and backup sweep (`sweep_outbound`) run here; catch-up sync actor is not built yet.
 
 Put actors in `<app>/tasks.py`; both commands discover them automatically. After changing
 dependencies, rebuild with `docker compose up -d --build worker`.
@@ -79,7 +81,7 @@ the Postgres credentials and ports are defined once.
 ```sh
 docker compose up -d --wait   # the health tests use the real Postgres and Redis
 uv run pytest -q
-uv run pytest -m brief        # run tests for the brief's required checks (9 tests)
+uv run pytest -m brief        # run tests for the brief's required checks (10 tests)
 ```
 
 pytest-django creates a separate test database, so the tests never touch your data.
@@ -94,9 +96,11 @@ src/
   config/      Django project: settings, urls, wsgi/asgi
   sync/        the sync app: models (Customer, Contact, ChangeEvent, FieldChange, Outbox,
                SyncState), admin, serializers, permissions, services (apply() and rules core),
-               views (WebhookView), tasks (purge_expired_change_events), urls,
-               create_integration_user command, tests (including fakes.py, scenarios.py,
-               test_fakes.py)
+               views (WebhookView), client (SalesforceClient), limiter (RateLimiter),
+               tasks (purge_expired_change_events, send_outbound, probe_salesforce,
+               recover_limiter_rate, sweep_outbound), urls, create_integration_user command,
+               tests (including fakes.py, scenarios.py, test_fakes.py, test_client.py,
+               test_limiter.py, test_outbound.py)
   utils/       shared bits: api/v1/health/ endpoint (views, urls, serializers), rundramatiq
                override (fixes --reload), tests
 docs/          Round1.html (the brief), design.md (design doc), build-plan.md (phases and

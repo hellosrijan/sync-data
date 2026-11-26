@@ -79,6 +79,18 @@ checkbox, with the markers explained at the top of the plan.
   stable: add new subtasks with the next free number, and cancel rather than delete, so the
   ledger's references stay valid.
 
+## Brief-alignment audits (post-hoc, separate from the build loop)
+
+Besides building, Monica can dispatch a **review** of one or more already-done phases: one
+**agent-rachel** instance per phase, each independently checking that phase's code against
+`docs/Round1.html` itself (not just our own `design.md`/`build-plan.md` paraphrase of it).
+Follow `.claude/skills/brief-alignment-review/SKILL.md`. Reviews of independent, already-built
+phases are dispatched together in one message so they run concurrently — there's no
+Phoebe→Ross-style dependency between them. Findings go in a shared review ledger
+(`docs/tasks/V-<NNN>-<slug>.md`, one section per phase, append-only like a task ledger); Monica
+reads every finding and decides what to do with each one (file a new build task, ask the user,
+or accept it as-is) — a reviewing agent never fixes what it finds.
+
 ## Communication channel 1: the task ledger (source of truth)
 
 One file per task: `docs/tasks/T-<NNN>-<slug>.md`, created by Monica from the `task-ledger`

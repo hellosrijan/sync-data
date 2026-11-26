@@ -143,7 +143,11 @@ needs nothing extra — the check is a no-op (every field present already differ
 integration user's webhooks arrive as — read it from settings (`SALESFORCE_INTEGRATION_USER`
 or similar; add the setting if it doesn't exist yet, next to `SALESFORCE_TOKEN`). Record the
 `ChangeEvent` (already done above) and a `FieldChange` row per field with `status=ECHO`, but
-touch no column on the record and queue nothing.
+touch no column on the record and queue nothing. The one exception is `field_meta[f]["sf_value"]`:
+set it to the echoed value, but only when `_is_newer(change, record, f)` holds (a field with no prior
+`field_meta` entry counts as newer), so a late echo can't clobber a newer real value. Leave `at`, `source`
+and `by` alone. Without this, a later genuine Salesforce revert to the old value looks unchanged and is
+dropped (T-007).
 
 **Outbox** (2.3.1 — merge, don't duplicate):
 

@@ -8,8 +8,11 @@ serializers and `GET /api/v1/health/`. Phase 2 is built (ledger T-003): `apply()
 the rules core, with no network. Phase 3 is built (ledger T-004): `WebhookView` at
 `/api/v1/webhooks/salesforce/`, `WebhookEventSerializer`, customer linkage, and dedupe purge task.
 Phase 4 is built (ledger T-005): `FakeSalesforce` test double (`src/sync/tests/fakes.py`), `MockTransport` and
-`ThreadingHTTPServer` fixtures, failure modes, and scenario builders (`src/sync/tests/scenarios.py`) (171 tests passing, 9 marked `brief`).
-The outbound worker and catch-up are not built yet.
+`ThreadingHTTPServer` fixtures, failure modes, and scenario builders (`src/sync/tests/scenarios.py`).
+Phase 5 is built (ledger T-006): `SalesforceClient` (`src/sync/client.py`), Redis atomic token-bucket `RateLimiter`
+(`src/sync/limiter.py`), Dramatiq outbound worker (`send_outbound`), 5-failure down detection, 10s recovery probe,
+and restart-while-down brief check (190 tests passing, 10 marked `brief`).
+Catch-up is not built yet.
 Decided: §5 to §9; Q4 to Q9 and Q11 in §1;
 all three metrics in §11. Q1 to Q3, Q10, Q12 and Q13 are recorded as assumptions, and §10 is
 arithmetic on them. Q14 (portal login) is a default assumption from the build plan. Q15 to Q18
@@ -71,7 +74,7 @@ Questions added while writing this doc (not in the brief):
 |---|---|---|---|
 | Salesforce | Client's infrastructure | CRM. Sales users edit here. Has its own database. | Exists. Not ours. |
 | Django web | Django 5.2 on the host (`runserver`) | HTTP entry point: the webhook endpoint (path A) and the portal API (Q6). Serves `GET /api/v1/health/` and `POST /api/v1/webhooks/salesforce/` today. | Webhook endpoint built (phase 3, T-004); portal API not built yet. Portal login: DRF token per user (Q14, default); the Salesforce integration user comes from `manage.py create_integration_user`. |
-| Dramatiq worker | Container `worker` | Runs Dramatiq actors and the dramatiq-crontab scheduler. | Runs dedupe retention actor `purge_expired_change_events` (daily at 02:00, `@cron` in `src/sync/tasks.py`) and dramatiq-crontab's heartbeat. Outbound and catch-up sync actors not built yet. |
+| Dramatiq worker | Container `worker` | Runs Dramatiq actors and the dramatiq-crontab scheduler. | Runs dedupe retention actor `purge_expired_change_events` (daily at 02:00, `@cron` in `src/sync/tasks.py`), outbound worker `send_outbound` (with `max_retries=0`), recovery probe `probe_salesforce` (every 10 s, `@interval`), rate recovery `recover_limiter_rate` (every 30 s, `@interval`), backup sweep `sweep_outbound` (every 5 s, `@interval`), and dramatiq-crontab's heartbeat. Catch-up sync actor not built yet. |
 | Postgres 17 | Container `db` | Portal copy of the records. | Running. Six models, migrations `0001_initial` and `0002_audit_columns` (§4). |
 | Redis 7 | Container `redis` | Dramatiq broker (task messages), wake-up signal for the outbox, shared rate-limiter count, scheduler lock, health ping. | Running, AOF on. |
 
@@ -116,8 +119,10 @@ Done (phase 0): Compose stack with Postgres, Redis (AOF on) and the worker; Djan
 worker reload override. Phase 1 done (T-001, T-002): models, audit columns, auth, admin, URL layout,
 serializers, skills and the chat-export change. Phase 2 built (T-003): `apply()`, with its tests. Phase 3
 built (T-004): `WebhookView`, `WebhookEventSerializer`, customer linkage, and dedupe retention task. Phase 4
-built (T-005): `FakeSalesforce` test double, `MockTransport`, failure modes, and scenario builders (171 tests passing,
-9 marked `brief`). Not built: phases 5 to 9. Full phases, tasks and subtasks: [`build-plan.md`](build-plan.md).
+built (T-005): `FakeSalesforce` test double, `MockTransport`, failure modes, and scenario builders. Phase 5
+built (T-006): `SalesforceClient`, Redis `RateLimiter` token bucket, outbound worker (`send_outbound`),
+down detection, 10s recovery probe, and restart-while-down brief test (190 tests passing, 10 marked `brief`).
+Not built: phases 6 to 9. Full phases, tasks and subtasks: [`build-plan.md`](build-plan.md).
 
 Riskiest first:
 
@@ -274,10 +279,14 @@ Salesforce is marked **down** after 5 consecutive unreachable failures. Sending 
 runs every 10 s. When the probe succeeds, catch-up runs, then every pending row is due at once
 (§10).
 
-The outbox model is built (task 1.3.2), and `apply()` writes its rows (phase 2). Not built yet: the outbound task, the limiter and the probe. The fields in an
-outbound call are the fields the portal user changed, read at their current values.
-`src/config/settings.py` already turns on Dramatiq's `Retries` middleware for every actor
-(`max_retries` 20 by default). The outbound task must set `max_retries=0`.
+The outbox model is built (task 1.3.2), and `apply()` writes its rows (phase 2). Phase 5 (T-006)
+built the outbound task (`send_outbound`), the shared rate limiter (`RateLimiter` via Redis Lua
+token bucket at default 90 req/s), the 10 s recovery probe (`probe_salesforce`), the 30 s rate recovery
+actor (`recover_limiter_rate`), the 5 s backup sweep (`sweep_outbound`), and the `transaction.on_commit`
+wake-up trigger. The fields in an outbound call are the fields the portal user changed, read at
+their current values at send time. `src/config/settings.py` turns on Dramatiq's `Retries` middleware
+for every actor (`max_retries` 20 by default); the outbound task explicitly overrides this with
+`max_retries=0` so Dramatiq's retries and dead-letter queue are not used for outbound sync.
 
 ## 7. Rule: both sides change the same record
 
@@ -324,8 +333,12 @@ Decided.
 - **Our echo:** a webhook whose `changedBy` is our integration user (`settings.SALESFORCE_INTEGRATION_USER`,
   a placeholder until set in `.env`; catch-up results count too) is our own update coming
   back. It's recorded as a confirmation and never applied: one `echo` history row per field, and the
-  `ChangeEvent` is kept. No record column, `field_meta` or outbox row changes. This stops a delayed echo from
-  overwriting a newer portal edit. An echo never creates a record (Q17).
+  `ChangeEvent` is kept. The record's column values, the history status (stays `echo`), `created_by`/`updated_by`
+  and the outbox stay untouched. The one exception is `field_meta[f].sf_value`: it is set to the echoed value,
+  but only when `_is_newer(change, record, f)` holds, so a late or out-of-order echo can't overwrite a newer
+  real value. This keeps later comparisons correct: a genuine Salesforce revert to the old value is then
+  applied instead of being dropped as `no_change` (T-007, found in the V-001 audit). `at`, `source` and `by`
+  keep their old values. An echo never creates a record (Q17).
 - *Assumption:* `changedBy` shows our integration user for writes made through the API. *If not:* our
   own echo is applied like any Salesforce change. It is still not sent back, because webhook changes
   never create outbox rows.
@@ -420,12 +433,12 @@ Left out for now:
   is Python 3.14 with Django. This is the user's decision, recorded as a deviation. It is not a
   design choice.
 
-Built in scope: FakeSalesforce test double and scenarios (phase 4, T-005),
-inbound webhook endpoint and dedupe retention (phase 3, T-004), `apply()`
-rules core (phase 2, T-003), foundations, models, admin and auth (phase 1, T-001, T-002).
-Not built yet (in scope, not left out): outbound actors, the shared rate limiter, the outage probe (phase 5), catch-up (phase 6),
-portal API views (phase 7), and the demo script (phase 8). The sync rules themselves in §5 to §9
-are built at the database level in `apply()` (`src/sync/services.py`, phase 2, T-003) and exposed
-inbound via `WebhookView` (`src/sync/views.py`, phase 3, T-004).
+Built in scope: outbound worker, shared rate limiter, outage probe, and restart-while-down brief test (phase 5, T-006),
+FakeSalesforce test double and scenarios (phase 4, T-005), inbound webhook endpoint and dedupe retention (phase 3, T-004),
+`apply()` rules core (phase 2, T-003), foundations, models, admin and auth (phase 1, T-001, T-002).
+Not built yet (in scope, not left out): catch-up (phase 6), portal API views (phase 7), and the demo script (phase 8).
+The sync rules themselves in §5 to §9 are built at the database level in `apply()` (`src/sync/services.py`, phase 2, T-003),
+exposed inbound via `WebhookView` (`src/sync/views.py`, phase 3, T-004), and dispatched outbound via `send_outbound`
+(`src/sync/tasks.py`, phase 5, T-006).
 
 TODO: anything else we cut.

@@ -56,6 +56,11 @@ def apply(change: Change) -> Result:
         if _is_echo(change):
             for name, value in change.fields.items():
                 _write_history(change, record, name, value, FieldChange.Status.ECHO)
+                if _is_newer(change, record, name):  # don't let a late echo overwrite a newer real value
+                    meta = record.field_meta.get(name, {})
+                    meta["sf_value"] = value
+                    record.field_meta[name] = meta
+            record.save(update_fields=["field_meta"])
             return Result(outcome="echo")
 
         applied_fields = []
@@ -82,6 +87,15 @@ def apply(change: Change) -> Result:
 
         if change.source == "portal" and applied_fields:
             _upsert_outbox_row(change.object_type, record.pk, applied_fields, change.operation)
+
+            def _notify_outbound():
+                try:
+                    from sync.tasks import send_outbound
+                    send_outbound.send()
+                except Exception:
+                    pass
+
+            transaction.on_commit(_notify_outbound)
 
         return Result(outcome="applied" if applied_fields else "no_change", applied_fields=applied_fields)
 
