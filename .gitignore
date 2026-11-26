@@ -222,3 +222,6 @@ public/static/*
 # opencode falls back to CLAUDE.md when no AGENTS.md exists; keep one rules file.
 AGENTS.md
 
+
+# opencode chat exports unecessary.
+docs/chats/*-opencode-*.md

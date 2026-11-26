@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
+    "rest_framework.authtoken",
     "utils",  # before django_dramatiq: its rundramatiq overrides the stock one
     "django_dramatiq",
     "dramatiq_crontab",
@@ -140,7 +141,14 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # Django REST framework
 REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
+    "DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework.authentication.TokenAuthentication"],
+    "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
 }
+
+# Salesforce record API (outbound sync), see docs/design.md §6
+SALESFORCE_BASE_URL = env("SALESFORCE_BASE_URL")
+SALESFORCE_TOKEN = env("SALESFORCE_TOKEN")
+SALESFORCE_RATE_LIMIT = env.int("SALESFORCE_RATE_LIMIT", default=90)
 
 # Dramatiq (Redis broker) - outbound sync worker, see docs/design.md §6
 DRAMATIQ_BROKER = {

@@ -9,6 +9,29 @@
 - Secrets live in `.env` only (git-ignored). `.env.example` has the same keys with placeholder
   values.
 
+## Agent team for build work
+
+Build tasks are given to the team with `/monica <task>`. The team runs in Claude Code only;
+`.opencode/` has no wrappers for it yet.
+
+| Agent | Role |
+|---|---|
+| **Monica** | Lead (Sonnet). Owns the task, approves the plan, dispatches the others, and verifies every acceptance criterion herself |
+| **Joey** | Router. Writes testable acceptance criteria and the routing plan; re-routes blocked steps |
+| **Phoebe** | Coder. Django/DRF **generic views** only; writes to synced records go through `apply()` |
+| **Ross** | Tester. A pytest-django test per criterion, plus Django admin checks. Failures go back to Phoebe (3 rounds, then Rachel) |
+| **Chandler** | Updates docs, test results and `.claude` rules for Monica's review; records lessons in agent-memory |
+| **Rachel** | Backup. Research, second opinion, takes over a stuck step |
+
+How they communicate:
+- **Task ledger** (`docs/tasks/T-<NNN>-<slug>.md`): criteria, routing plan, an append-only log of
+  every hand-off with evidence, test results, and Monica's verdict. It's committed with the
+  work.
+- **agent-memory**: lessons across tasks, stored by Chandler only, titled `[team] T-<NNN> …`.
+
+The rules live in `.claude/rules/agent-team.md` and `.claude/rules/drf.md`. Nobody commits:
+when Monica finishes, run `/ready-to-commit`.
+
 ## AI agents (Claude Code and opencode)
 
 Both harnesses have the same three agents and the same `/ready-to-commit` command. The source of
@@ -28,7 +51,7 @@ The agents:
 |---|---|---|
 | `document-update` | Keeps `docs/design.md`, `README.md`, the `wiki/` pages and `CLAUDE.md` accurate against the code and the brief. Records decisions; never invents them. | Via `/ready-to-commit`, or on request |
 | `agent-code-review` | Writes and runs pytest-django tests; reviews the code against the brief's rules (duplicate webhook, out-of-order webhook, per-field merge, sync loop, outage durability, rate cap, history, webhook validation). | Only via `/ready-to-commit` |
-| `chat-export` | Runs `scripts/export-chats.py`, which exports every Claude Code and opencode session to `docs/chats/` as markdown, redacting `.env` secrets. The brief requires the full chat history. | Only via `/ready-to-commit` |
+| `chat-export` | Runs the export block inside its own agent file (`.claude/agents/chat-export.md`), which exports every Claude Code session to `docs/chats/` as markdown, redacting `.env` secrets. Opencode chats are never exported or committed (user decision). The brief asks for the full chat history; see Open questions. | Only via `/ready-to-commit` |
 
 ## `/ready-to-commit`
 
@@ -40,7 +63,7 @@ after confirmation. It runs steps a to h in order and stops at the first failure
 | a | Check for changes with `git status --porcelain`. No changes means stop. |
 | b | `document-update` brings the docs, README, wiki sources and CLAUDE.md in line with the code. Then `bash scripts/build-wiki.sh "$(mktemp -d)"` must pass. |
 | c | `agent-code-review` writes and runs tests with `uv run pytest -q`. A failing test stops the run. Unbuilt features are listed as gaps, not failures. |
-| d | `chat-export` runs `scripts/export-chats.py`. A secret-scan hit stops the run. |
+| d | `chat-export` runs its export block. A secret-scan hit stops the run. |
 | e | `git status` again. List every changed file, grouped by area. |
 | f | Draft the commit message. The subject states the decision made. |
 | g | Print the message and ask: **Commit**, **Edit message**, or **Don't commit**. |
@@ -55,9 +78,9 @@ docker compose up -d --wait
 uv run pytest -q
 ```
 
-Tests live in `src/<app>/tests/`. The health tests use the real Postgres and Redis from Compose.
-pytest-django creates a separate test database. There is no fake Salesforce yet; the brief's
-sync tests will need one.
+Tests live in `src/<app>/tests/`. `uv run pytest -q` runs them all. The health tests use the real Postgres and Redis from Compose.
+pytest-django creates a separate test database. Salesforce is faked inside the tests
+(`src/sync/tests/fakes.py`, build plan phase 4): no extra app or container.
 
 ## Known issues
 
@@ -66,6 +89,14 @@ sync tests will need one.
   run the server through `uv run --with "mcp<2" ...`. That's a local patch: a plugin update
   overwrites it, and agent-memory then shows "Connection closed" until it is re-applied.
 
+## Open questions
+
+- **Opencode chats.** The brief asks for every chat used for the task, in the submission. Decided
+  (user): opencode chats are never exported or committed, so they are not in the submission. Open
+  for the user: accept that gap for the brief's chat requirement, or change the decision.
+- **Portal API login.** A default, not yet confirmed: a DRF token per portal user ([Design](Design)
+  Q14). It is still unticked in the build plan's review list.
+
 ## How this wiki is published
 
 | Wiki page | Source in the repo |
@@ -73,6 +104,7 @@ sync tests will need one.
 | Home, Architecture, Development Workflow, sidebar | `wiki/*.md` |
 | Getting Started | `README.md` |
 | Design | `docs/design.md` |
+| Build Plan | `docs/build-plan.md` |
 
 `.github/workflows/wiki.yml` runs `scripts/build-wiki.sh` on every push to `main` that touches
 these sources, then mirrors the result into the `<repo>.wiki.git` repository. Pages that are no

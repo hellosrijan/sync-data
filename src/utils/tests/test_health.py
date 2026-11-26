@@ -7,7 +7,7 @@ from rest_framework.test import APIClient
 
 
 def get_health():
-    return APIClient().get("/health/")
+    return APIClient().get("/api/v1/health/")
 
 
 @pytest.mark.django_db

@@ -90,7 +90,7 @@ flowchart LR
 | **(A)** | Webhook over HTTPS. Salesforce calls us. Outside the cap. |
 | **(B)** | Create / update over HTTPS. We call the record API. Counts against the cap. |
 | **(C)** | "Changed since watermark" query over HTTPS. Counts against the cap. |
-| result | Accepted → mark the outbox row sent and store the new Salesforce ID on a create. Rejected, slow down or unreachable → keep the row and retry through the limiter. |
+| result | Accepted → mark the outbox row sent; on a create, store the Salesforce ID. Unreachable → retry with backoff capped at 60 s. 429 → the whole limiter slows down. Bad data → `needs_review`. Full rules: [Sending and retries](#sending-and-retries-path-b). |
 | dotted | Signals and responses, not data writes |
 
 Thick arrows (A, B, C) are requests that cross the public internet over HTTPS, which is the only
@@ -130,18 +130,18 @@ Inside the portal box there are three smaller boxes, plus Redis and `apply()` si
 
 | Table | What it holds | Why it exists |
 |---|---|---|
-| **Customer / Contact** | The current value of every field, plus *when* each field was last set and by which side | The per-field time is how we tell whether an incoming change is newer |
+| **Customer / Contact** | The current value of every field, plus *when* each field was last set, by which side, and **the last value we synced from Salesforce** | The per-field time tells us whether an incoming change is newer. The last Salesforce value tells us which fields in a whole-record webhook actually changed. |
 | **field_change** | Every change ever made: field, value, who, when, from which side, and whether it became current | The brief's history requirement. Rows are only added, never changed. |
 | **change_event** | The ID of every change we've seen, kept 7 days | Duplicate detection: a second copy of an ID is ignored |
-| **outbox** | Portal edits waiting to be sent to Salesforce | The pending work. It's on disk, so it survives restarts, and it's never dropped. |
+| **outbox** | Portal edits waiting to be sent to Salesforce, with their state (`pending`, `sent`, `needs_review`), attempts and next retry time | The pending work. It's on disk, so it survives restarts, and it's never dropped. |
 | **watermark** | How far the last catch-up got | So the next catch-up only asks for what's new |
 
-**Redis**, just a doorbell. When a row lands in the outbox, Redis tells the worker "there's work". If Redis lost that message, no work would be lost, because the outbox in Postgres still holds the row. That's why it's labelled *wake-up signal* and not *queue*.
+**Redis**, mainly a doorbell. When a row lands in the outbox, Redis tells the worker "there's work". If Redis lost that message, no work would be lost, because the outbox in Postgres still holds the row. That's why it's labelled *wake-up signal* and not *queue*. Redis also holds the shared limiter count and Dramatiq's own task messages, but no pending calls.
 
 **Dramatiq worker**, the background process that talks to Salesforce. It has three parts:
 - **Outbound task:** sends pending outbox rows to Salesforce.
 - **Catch-up task:** asks Salesforce what changed, after an outage and every 5 minutes as a safety net.
-- **Shared rate limiter**, the hexagon. *Every* call we make to Salesforce goes through it: sends, retries and catch-up queries. It keeps the total at or under 100 per second. It lives in Redis so that all worker threads and processes share one count. Webhooks don't pass through it, because the brief says they don't count.
+- **Shared rate limiter**, the hexagon. *Every* call we make to Salesforce goes through it: sends, retries and catch-up queries. It keeps the total at or under the run rate of 90 req/s, below the 100 req/s cap (Q10). It lives in Redis so that all worker threads and processes share one count. Webhooks don't pass through it, because the brief says they don't count.
 
 ### 3. The three paths
 
@@ -150,8 +150,8 @@ Inside the portal box there are three smaller boxes, plus Redis and `apply()` si
 *Sales user → Salesforce CRM ⇒(A)⇒ webhook endpoint → `apply()` → tables*
 
 1. A sales user changes a phone number in Salesforce.
-2. Salesforce sends a webhook to our endpoint over HTTPS. It carries `eventId`, `recordId`, `occurredAt`, `changedBy` and `changedFields`.
-3. The endpoint validates it and calls `apply()`.
+2. Salesforce sends a webhook to our endpoint over HTTPS. It carries `eventId`, `recordId`, `objectType`, `occurredAt`, `changedBy` and `changedFields`.
+3. The endpoint checks the DRF token (401 if wrong), validates the payload (400 if malformed), works out which fields actually changed, and calls `apply()`. Nothing is stored before these checks pass.
 4. `apply()` updates the current phone (if this change is the newest), writes a history row, and records the event ID.
 5. **No arrow goes from this path to the outbox.** That's the sync-loop rule: anything that came *from* Salesforce is never sent *back* to Salesforce.
 
@@ -162,13 +162,17 @@ It's fast (milliseconds), and it doesn't count against the rate limit.
 *Finance user → Portal API → `apply()` → outbox ··notify··› Redis → Outbound task → rate limiter ⇒(B)⇒ Record API*
 
 1. A finance user sets city = Noida.
-2. The Portal API calls `apply()`, which saves the city, writes a history row, **and in the same transaction** adds an outbox row saying "send city = Noida to Salesforce". Because it's one transaction, we can never end up with the edit saved but the send forgotten, or the reverse.
+2. The Portal API calls `apply()`, which saves the city, writes a history row, **and in the same transaction** adds an outbox row saying "the city on this record needs sending to Salesforce". Because it's one transaction, we can never end up with the edit saved but the send forgotten, or the reverse.
 3. The outbox nudges Redis (dotted *notify*), and Redis wakes the outbound task.
-4. The outbound task reads the pending row (*reads pending*) and asks the rate limiter for permission.
-5. The limiter lets it through, and the task calls the Record API (thick arrow **B**).
+4. The outbound task claims the pending row (*reads pending*), reads the city's **current** value from the record, and asks the rate limiter for permission. Sending the current value rather than the edit means an older edit can never overwrite a newer one in Salesforce.
+5. The limiter lets it through, and the task calls the Record API (thick arrow **B**). A create is sent as an upsert carrying our record ID, so a retry can't create a duplicate (assumption Q13).
 6. The dotted **result** arrow is Salesforce's answer:
    - **Accepted:** mark the outbox row sent. On a create, also store the new Salesforce ID.
-   - **Rejected, "slow down" or unreachable:** keep the row and retry later, through the limiter, so retries count toward the cap.
+   - **Unreachable, timeout or 5xx:** keep the row and retry with backoff (1, 2, 4, 8 s…, never more than 60 s).
+   - **429 "slow down":** keep the row, and slow the whole limiter down.
+   - **Rejected for bad data:** move the row to `needs_review` and raise an alert. It's never dropped.
+
+   Every retry goes back through the limiter, so retries count toward the cap. Full rules are in [Sending and retries](#sending-and-retries-path-b).
 
 This is the only path that writes to Salesforce, and only portal edits feed it (the *portal edits only* label on the arrow into the outbox).
 
@@ -179,7 +183,7 @@ This is the only path that writes to Salesforce, and only portal edits feed it (
 1. It's triggered when Salesforce comes back after an outage, and every 5 minutes as a safety net.
 2. The task asks the Query API for records changed since the watermark (thick arrow **C**). This call also goes through the limiter.
 3. Salesforce returns the changed records (dotted *changed records*), up to about 2,000 per call.
-4. Each record goes through **the same `apply()`** as a webhook (*each record*). So if we'd already received a change by webhook, the copy is recognised and causes nothing new.
+4. Each record goes through **the same `apply()`** as a webhook (*each record*). So if we'd already received a change by webhook, its values match what we last synced, no field counts as changed, and nothing new is written. (The two paths use different event IDs, so this comparison is what catches the copy.)
 5. The task moves the watermark forward.
 
 This path exists because of one line in the brief: webhooks Salesforce tried to send during the outage "may never arrive". Without (C), sales-side edits made during those 6 hours would be lost for good.
@@ -259,7 +263,42 @@ Where the inputs come from:
 | `event_id` | `eventId` | New UUID | `record_id` + Salesforce modified time |
 | `occurred_at` | `occurredAt` | Our server clock when the save arrives | Salesforce modified time (record level) |
 | `actor` | `changedBy` | The logged-in portal user | Salesforce "last modified by" |
-| `fields` | `changedFields` | The fields in the form | Fields whose value differs from the last value we synced from Salesforce |
+| `fields` | Fields whose value differs from the last value we synced from Salesforce (the webhook carries the whole record, assumption Q2) | The fields in the form | Same comparison as a webhook |
+
+## Sending and retries (path B)
+
+Decided ([Design](Design) §6, Q7). The **outbox** drives sending and retries; Dramatiq's own
+retries are turned off for the outbound task.
+
+```
+pending ──send──► sent ✓
+   ▲  │
+   │  ├─ unreachable / timeout / 5xx ─► pending again, next_attempt_at = now + backoff
+   │  ├─ 429 slow down ───────────────► pending again, at Retry-After; the whole limiter slows
+   │  └─ 400-type rejection ──────────► needs_review   (never dropped, alert raised)
+   └── a person fixes it and requeues ◄─┘
+```
+
+| Salesforce's answer | Action |
+|---|---|
+| Accepted | `sent`. On a create, store the Salesforce ID. |
+| Unreachable, timeout, 5xx | Retry at 1, 2, 4, 8 s…, capped at 60 s. Four quick retries take 15 s, inside the 30 s target. |
+| 429 slow down | Pause the shared limiter until `Retry-After`, halve its rate, then climb back by 5 req/s every 30 s to 90 |
+| 400-type rejection | `needs_review` and an alert. Never dropped. |
+| 401 / 403 | Stop all sending and page someone: our credentials are wrong |
+
+- **Outage detection:** after 5 consecutive unreachable failures, Salesforce is marked *down*.
+  Sending stops and a probe runs every 10 s. When it succeeds, catch-up runs, then every pending
+  row is due at once.
+- **We send the current value, not the edit.** The worker reads the record's current values for
+  the changed fields at send time. Pending edits to one record collapse into one call, and an
+  update sent twice is harmless.
+- **Workers claim rows** with `SELECT … FOR UPDATE SKIP LOCKED` and a lease (`lease_until`). If a
+  worker dies mid-call, the lease runs out and another worker sends the row again.
+- **Creates are upserts by external ID** (assumption Q13). Our record ID goes with the create, so a
+  retry after a timeout matches the existing record instead of making a duplicate.
+- **Wake-up:** Redis nudges the outbound task, and a timer task every 5 s backs up a lost nudge.
+  Redis holds no pending calls, so losing its messages loses no work (Q8 closed).
 
 ## How the brief's rules are met
 
@@ -268,17 +307,19 @@ Where the inputs come from:
 | Duplicate webhook | `change_event.event_id` is unique, so a repeat is a no-op. IDs are kept 7 days. |
 | Out-of-order change | Per-field `occurred_at` comparison. The older change is kept in history but isn't current. |
 | Different fields edited at once | The comparison is per field, so both edits survive |
-| Same field edited at once | The newest `occurred_at` is current, and every edit stays in history |
+| Same field edited at once | The newest `occurred_at` is current, and every edit stays in history. Two portal users: last save wins, with no warning (Q4). |
 | History: who, what, when | `field_change` is written explicitly in `apply()` on every path, including superseded edits and bulk catch-up. It isn't a Django signal, because signals miss superseded edits and bulk writes. |
 | Sync loop | Only portal edits create outbox rows. Our echo (actor = integration user) is never applied. |
-| Pending calls survive restarts | The outbox row commits in the same transaction as the edit. Redis is only a wake-up signal, so losing it loses no work. |
-| Slow down / unreachable | The outbox row stays pending and is retried through the limiter. It's never dropped (Q9). |
+| Pending calls survive restarts | The outbox row commits in the same transaction as the edit. Redis holds no pending calls, so losing a wake-up loses no work. |
+| Slow down | A 429 pauses the shared limiter until `Retry-After`, halves its rate, then climbs back by 5 req/s every 30 s. The row stays pending. |
+| Unreachable | Retry with backoff capped at 60 s. After 5 consecutive failures Salesforce is marked down, and a probe checks every 10 s. Nothing is dropped (Q9). |
+| Rejected (bad data) | `needs_review` plus an alert; a person fixes and requeues it. Never dropped (Q9). |
 | Webhooks missed in the outage | Catch-up (C), triggered by recovery and every 5 min |
 
 ## After an outage
 
-1. While Salesforce is down, outbound calls fail. Their outbox rows stay pending, and a probe
-   checks every ~10 s whether Salesforce is back.
+1. Outbound calls start failing. After 5 consecutive failures Salesforce is marked down: sending
+   stops, outbox rows stay pending, and a probe checks every 10 s whether Salesforce is back.
 2. The probe succeeds, so Salesforce is back.
 3. **Catch-up first.** Pull what changed in Salesforce since the watermark (minus a few minutes
    of overlap) and apply each record. Same-field conflicts are settled before we send anything.
@@ -320,9 +361,22 @@ why Q12 is a stated assumption.
 - **Clocks.** Salesforce's `occurredAt` and our server clock are compared directly. We assume
   both are NTP-synced, with drift well below the gap between real edits.
 
+## Services and the boundary between them (Q6)
+
+**Two services**, from the same codebase:
+
+| Service | Runs | Paths |
+|---|---|---|
+| Django web | Webhook endpoint, portal API, `apply()` for webhooks and portal saves | A, and the first half of B (edit → outbox) |
+| Dramatiq worker | Outbound task, catch-up task (calls `apply()` for each record it gets back), shared limiter | Second half of B (outbox → Salesforce), and C |
+
+They never call each other. **What crosses the boundary:** outbox rows in Postgres (the work)
+and a Redis nudge. The worker writes results back to Postgres. A 6-hour outage only backs up the
+worker; the web process keeps answering portal users and webhooks. Each service restarts and
+scales on its own.
+
 ## Still open
 
-- Q6: which process hosts the webhook endpoint, and what crosses to the worker. Currently the
-  web process; the worker shares Postgres and Redis.
-- Q11: how a webhook is authenticated before `apply()`.
-- Q4: what a second portal user sees when the same field changes under them.
+All questions in [Design](Design) §1 are answered or recorded as assumptions. Q14 (how portal users
+log in to the portal API) is a default assumption, a DRF token per portal user, not yet confirmed.
+The build order of the subproblems is in [Design](Design) §3.

@@ -16,16 +16,17 @@ Targets every decision has to meet:
 
 ## Status
 
-Phase 0: project skeleton (Django, Postgres, Redis, Dramatiq worker). No data model or sync
-logic yet. The design is in progress on the [Design](Design) page.
+Phase 1 (foundations) is in progress: the models, audit columns, admin, token authentication, URL
+layout and serializers are built. No sync logic yet. The design is in progress on the [Design](Design) page: the rules are decided (§5 to §9) and the metrics are set (§11). The build order is in [Design](Design) §3 and the [Build Plan](Build-Plan). Portal API login (Q14) is a default assumption, not yet confirmed.
 
 ## Pages
 
 | Page | What's in it |
 |---|---|
 | [Getting Started](Getting-Started) | Setup, running the stack, the worker, layout |
-| [Architecture](Architecture) | Draft architecture: who calls whom, the diagram, open points |
+| [Architecture](Architecture) | Agreed architecture: the three paths, the diagram, the services, the outage flow |
 | [Design](Design) | The design document: assumptions, rules, outage arithmetic |
+| [Build Plan](Build-Plan) | Phases, tasks and subtasks to build it, riskiest first; the API contract ([`openapi.yml`](https://github.com/hellosrijan/sync-data/blob/main/docs/openapi.yml)) |
 | [Development Workflow](Development-Workflow) | Commit rules, Claude agents, `/ready-to-commit`, how this wiki is published |
 
 ## About this wiki

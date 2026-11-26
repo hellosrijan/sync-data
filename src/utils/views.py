@@ -1,18 +1,18 @@
 import redis
 from django.conf import settings
 from django.db import connection
-from rest_framework import generics, serializers, status
+from rest_framework import generics, status
+from rest_framework.permissions import AllowAny
 
-
-class HealthSerializer(serializers.Serializer):
-    postgres = serializers.CharField()
-    redis = serializers.CharField()
+from utils.serializers import HealthSerializer
 
 
 class HealthView(generics.RetrieveAPIView):
     """Liveness + dependency check: Postgres and Redis must both answer."""
 
     serializer_class = HealthSerializer
+    authentication_classes = []
+    permission_classes = [AllowAny]
 
     def get_object(self):
         checks = {}

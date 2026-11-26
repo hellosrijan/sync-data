@@ -1,5 +1,5 @@
 ---
-description: Exports every Claude Code and opencode session for this repo (the user's messages, the assistant's replies, tool calls and results) as readable markdown in docs/chats/, one dated file per session. Use ONLY when the user says they are ready to commit. Never run it proactively.
+description: Exports every Claude Code session for this repo (opencode chats are never exported) (the user's messages, the assistant's replies, tool calls and results) as readable markdown in docs/chats/, one dated file per session. Use ONLY when the user says they are ready to commit. Never run it proactively.
 mode: subagent
 permissions:
   - action: edit
@@ -9,7 +9,7 @@ permissions:
     resource: "*"
     effect: deny
   - action: shell
-    resource: "python3 scripts/export-chats.py*"
+    resource: "python3 - *"
     effect: allow
   - action: shell
     resource: "ls *"
@@ -29,7 +29,7 @@ it wins, except for the opencode notes below.
 opencode notes:
 
 - Claude tool names map to opencode as: Read → `read`, Bash → `shell`.
-- `scripts/export-chats.py` exports opencode sessions as well as Claude Code ones, so running
-  it from opencode captures both.
-- You may only run the export script, `ls` and `grep`. You can't edit files: the script does
+- The export block exports Claude Code sessions only. Opencode chats are never exported or
+  committed (user decision).
+- You may only run the export block from `.claude/agents/chat-export.md` (`python3 - …`), `ls` and `grep`. You can't edit files: the script does
   all the writing. Never commit, push, or stage anything.

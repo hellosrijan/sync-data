@@ -16,7 +16,8 @@ services:
 
   redis:
     image: redis:7-alpine
-    # AOF on: queued sync work must survive a Redis restart (see Round1 outage rule).
+    # AOF on: keeps Dramatiq messages and the limiter state across a Redis restart. Pending Salesforce
+    # calls live in the Postgres outbox, not here (design Q8).
     command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "${REDIS_PORT}:6379"

@@ -3,6 +3,7 @@
 #   - wiki/*.md            hand-written wiki pages, copied as-is
 #   - README.md            -> Getting-Started.md
 #   - docs/design.md       -> Design.md
+#   - docs/build-plan.md   -> Build-Plan.md
 # Repo-relative links in generated pages are rewritten to BLOB_URL so they work from the wiki.
 #
 # usage: scripts/build-wiki.sh OUT_DIR [BLOB_URL]
@@ -31,5 +32,6 @@ gen() {
 
 gen README.md Getting-Started.md
 gen docs/design.md Design.md
+gen docs/build-plan.md Build-Plan.md
 
 echo "Built $(ls "$out" | wc -l | tr -d ' ') pages into $out"

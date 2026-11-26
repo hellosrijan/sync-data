@@ -32,22 +32,22 @@ update coming back), 6-hour outage.
 ## Stack
 
 Python 3.14 with uv; Django 5.2 LTS (`>=5.2,<5.3`); DRF; Postgres 17; Redis 7; Dramatiq via
-django-dramatiq; dramatiq-crontab; django-environ; psycopg 3 (Postgres driver). All settings come from env vars (`.env`,
+django-dramatiq; dramatiq-crontab; django-environ; psycopg 3 (Postgres driver); httpx (Salesforce HTTP client). All settings come from env vars (`.env`,
 template in `.env.example`, same keys in both).
 
 ## Layout and commands
 
 ```
 src/manage.py
-src/config/   settings, urls
-src/sync/     the sync app
-src/utils/    /health/ (DRF RetrieveAPIView), rundramatiq override
-docs/         Round1.html (brief), design.md (design doc), chats/ (session exports)
+src/config/   settings, urls (the only file that defines api/v1/)
+src/sync/     the sync app: models, admin, serializers.py, urls.py, permissions.py (IsSalesforceIntegration),
+              management/commands/create_integration_user.py, tests/
+src/utils/    api/v1/health/ (DRF RetrieveAPIView), urls.py, serializers.py, rundramatiq override
+docs/         Round1.html (brief), design.md (design doc), build-plan.md (phases + checklist), openapi.yml (API contract), chats/ (session exports), tasks/ (agent-team ledgers)
 wiki/         hand-written GitHub wiki pages (Home, Architecture, Development-Workflow, _Sidebar)
-scripts/build-wiki.sh       builds the wiki: wiki/*.md + README.md + docs/design.md
-scripts/export-chats.py     exports Claude Code + opencode sessions to docs/chats/
+scripts/build-wiki.sh       builds the wiki: wiki/*.md + README.md + docs/design.md + docs/build-plan.md
 .github/workflows/wiki.yml  publishes the build to the GitHub wiki on push to main
-.claude/                    Claude Code agents and commands: the source of truth
+.claude/                    Claude Code agents, commands, rules, skills, settings: the source of truth
 .opencode/                  opencode (V2) config, agents, commands: wrappers around .claude/
 docker-compose.yml, Dockerfile, pyproject.toml, uv.lock, .env.example
 ```
@@ -72,11 +72,36 @@ uv run pytest -q                        # tests; needs the compose services up (
   `--watch-include **/*.py`. Without it, `--reload` ignores files in app packages (watchdog 7 +
   Python 3.13+ `full_match`). `utils` must stay before `django_dramatiq` in `INSTALLED_APPS`.
 
+## Agent team (`/monica <task>`)
+
+Build work goes through the team. Give the task with `/monica <task>`. Monica (Sonnet) runs in
+the main session and dispatches the others; subagents can't dispatch each other.
+
+| Agent | Role |
+|---|---|
+| `agent-monica` | Lead: owns the task, approves the plan, dispatches, verifies every criterion |
+| `agent-joey` | Router: acceptance criteria and routing plan; re-routes blocked steps |
+| `agent-phoebe` | Coder: Django/DRF generic views, serializers, admin, models |
+| `agent-ross` | Tester: pytest-django per criterion, Django admin checks; sends failures back to Phoebe |
+| `agent-chandler` | Docs, test results, `.claude` rules, agent-memory lessons |
+| `agent-rachel` | Backup: unblocks any agent |
+
+- Read `.claude/rules/agent-team.md` (workflow, ledger, agent-memory protocol) and
+  `.claude/rules/drf.md` (code conventions). The skills are in `.claude/skills/drf-endpoint/` and
+  `.claude/skills/task-ledger/`.
+- Hand-offs go in the task ledger, `docs/tasks/T-<NNN>-<slug>.md`, which is committed.
+  Cross-task lessons go in agent-memory, stored by Chandler only, titled
+  `[team] T-<NNN> …`, with `project: "sync-data"`.
+- Opencode chats are not exported (user decision). `.gitignore` also keeps any
+  `docs/chats/*-opencode-*.md` file out of git.
+
 ## Agents (`.claude/agents/`)
+
+The build team's six agents are in the section above. These are the other agents here.
 
 - `document-update`: keeps `docs/design.md`, other `docs/*.md`, `README.md`, the `wiki/` pages
   and the non-rule sections of this file accurate and clear enough for a teammate to build from. It never edits
-  `## Rules`, `Round1.html` or `docs/chats/`.
+  `## Rules`, `Round1.html`, `docs/chats/` or `docs/tasks/`.
 - `agent-code-review` and `chat-export`: run **only** via `/ready-to-commit`.
 
 ## opencode
@@ -101,5 +126,6 @@ the source of truth; `.opencode/` only wraps them.
   the opencode permissions.
 - Git tracks only `.opencode/opencode.jsonc`, `.opencode/agents/` and `.opencode/commands/`. The
   rest of `.opencode/` is ignored.
-- Opencode sessions count as AI chats for the brief. `scripts/export-chats.py` exports them
-  alongside Claude Code sessions.
+- Opencode chats are never exported or committed (user decision). The chat export is a block
+  inside `.claude/agents/chat-export.md`; it handles Claude Code sessions only.
+- The build team (`/monica` and its six agents) has no opencode wrappers. It runs in Claude Code only.

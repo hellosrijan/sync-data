@@ -7,15 +7,18 @@ yet). Design targets: 5 million
 records, a 30-second sync window while both sides are up, and surviving a 6-hour Salesforce outage.
 The brief is in [`docs/Round1.html`](docs/Round1.html).
 
-Status: phase 0 (project skeleton only, no models or sync logic yet).
+Status: phase 1 in progress. The models, admin, token authentication, URL layout and serializers
+are built. No sync logic yet. The build plan and its checklist are in
+[`docs/build-plan.md`](docs/build-plan.md).
 
 ## Stack
 
 - Python 3.14, [uv](https://docs.astral.sh/uv/)
-- Django 5.2 LTS, Django REST Framework
+- Django 5.2 LTS, Django REST Framework (token authentication)
 - Postgres 17 (portal database), Redis 7 (Dramatiq broker for the outbound worker)
 - django-dramatiq, dramatiq-crontab (scheduler for `@cron` actors), django-environ
 - psycopg 3 (Postgres driver)
+- httpx (HTTP client for the Salesforce record API)
 
 ## Prerequisites
 
@@ -32,8 +35,21 @@ uv run python src/manage.py migrate
 uv run python src/manage.py runserver
 ```
 
-The server listens on http://127.0.0.1:8000. `GET /health/` returns 200 when Postgres and Redis
-both answer.
+The server listens on http://127.0.0.1:8000. `GET /api/v1/health/` returns 200 when Postgres and
+Redis both answer.
+
+### API token for Salesforce
+
+Every API path starts with `/api/v1/` and every endpoint except health needs a token
+(`Authorization: Token <key>`). To create the Salesforce integration user (group
+`salesforce-integration`) and print its token:
+
+```sh
+uv run python src/manage.py create_integration_user   # optional: --username <name>; safe to re-run
+```
+
+Put the printed token in the webhook's `Authorization` header. Re-running reuses the same user
+and token and prints the same key again.
 
 ### Worker
 
@@ -70,13 +86,18 @@ pytest-django creates a separate test database, so the tests never touch your da
 src/
   manage.py
   config/      Django project: settings, urls, wsgi/asgi
-  sync/        the sync app (no models yet)
-  utils/       shared bits: /health/ endpoint, rundramatiq override (fixes --reload), tests
-docs/          Round1.html (the brief), design.md (design doc), chats/ (AI chat exports)
+  sync/        the sync app: models (Customer, Contact, ChangeEvent, FieldChange, Outbox,
+               SyncState), admin, serializers, permissions, urls, create_integration_user command,
+               tests
+  utils/       shared bits: api/v1/health/ endpoint (views, urls, serializers), rundramatiq
+               override (fixes --reload), tests
+docs/          Round1.html (the brief), design.md (design doc), build-plan.md (phases and
+               checklist), openapi.yml (API contract), chats/ (AI chat exports),
+               tasks/ (agent-team task ledgers)
 wiki/          hand-written GitHub wiki pages; CI builds and publishes them
-scripts/       build-wiki.sh (wiki build), export-chats.py (AI chat export)
+scripts/       build-wiki.sh (wiki build)
 .github/       workflows/wiki.yml: publishes the wiki on push to main
-.claude/       Claude Code agents and commands (the AI workflow source of truth)
+.claude/       Claude Code agents, commands, rules and skills (the AI workflow source of truth)
 .opencode/     opencode config, agents and commands: thin wrappers around .claude/
 docker-compose.yml   Postgres + Redis + worker; Django's web server runs on the host
 Dockerfile           worker image (uv, Python 3.14)

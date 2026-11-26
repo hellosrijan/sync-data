@@ -1,0 +1,588 @@
+openapi: 3.1.0
+info:
+  title: sync-data portal API
+  version: 0.1.0
+  summary: Two-way sync of customers and contacts between Salesforce and the Tequity portal.
+  description: |
+    Contract for the portal's HTTP API, written before the code (build plan, phase 1).
+    Every endpoint is a DRF generic view (`.claude/rules/drf.md`). Every write to a customer or
+    contact goes through `apply()` (docs/design.md §7–9), which records history, enforces
+    per-field ordering, and queues the change for Salesforce (portal edits only).
+
+    **URL layout (user decision):** every path starts with `/api/v1/`, defined once in
+    `config/urls.py`. Resource names are singular (`/api/v1/customer/`). Each app has its own
+    `urls.py` (with `app_name`) and `serializers.py`.
+
+    Brief: docs/Round1.html. Decisions and assumptions: docs/design.md §1 (Q1–Q14).
+    The fake Salesforce used in tests and the demo is test code (`src/sync/tests/fakes.py`,
+    build plan phase 4), not an app or a service, so it is not part of this contract.
+servers:
+  - url: http://localhost:8000
+    description: Local development (Django runserver)
+
+tags:
+  - name: webhook
+    description: Path A. Salesforce calls us when a record changes. Outside the 100 req/s cap.
+  - name: customers
+    description: Portal API for finance and customer-success users.
+  - name: contacts
+    description: Portal API for finance and customer-success users.
+  - name: sync
+    description: Operations. Sync health and the three numbers to watch (design §11).
+  - name: health
+    description: Liveness. Postgres and Redis reachable.
+
+security:
+  - portalToken: []
+
+paths:
+  /api/v1/webhooks/salesforce/:
+    post:
+      tags: [webhook]
+      operationId: receiveSalesforceWebhook
+      summary: Receive one Salesforce change event
+      description: |
+        DRF `CreateAPIView`. Steps (design §5): authenticate the integration user's token →
+        validate the payload → `apply()` works out which fields actually changed (compared with
+        the last value synced from Salesforce, inside the record lock) → dedupe, echo check,
+        per-field ordering, history → respond.
+
+        Returns **200** (not 201) for every accepted event, including a duplicate, an echo of
+        our own update, or an older change that was only written to history. Any 2xx tells
+        Salesforce to stop redelivering.
+      security:
+        - salesforceWebhookToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WebhookEvent" }
+            examples:
+              contactPhone:
+                summary: The brief's sample, whole-record form (Q2)
+                value:
+                  eventId: evt_1001
+                  recordId: 0031A00000Abc
+                  objectType: Contact
+                  occurredAt: "2026-11-02T11:30:04.000Z"
+                  changedBy: sales.user@client.example
+                  changedFields:
+                    fullName: Asha Rao
+                    phone: "+919876543210"
+                    email: asha.rao@example.com
+                    city: Pune
+                    owner: 0051A00000Own
+                    customer: 0011A00000Acc
+      responses:
+        "200":
+          description: Accepted. Nothing more will change if Salesforce sends it again.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WebhookResult" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/customer/:
+    get:
+      tags: [customers]
+      operationId: listCustomers
+      summary: List customers (cursor-paginated)
+      description: DRF `ListCreateAPIView`. Ordered by `id`. Cursor pagination, no total count (5M rows).
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - name: salesforceId
+          in: query
+          schema: { type: string }
+          description: Exact match.
+        - name: owner
+          in: query
+          schema: { type: string }
+          description: Exact match.
+      responses:
+        "200":
+          description: One page of customers.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CustomerPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [customers]
+      operationId: createCustomer
+      summary: Create a customer in the portal
+      description: |
+        `apply()` creates the record and queues an **upsert by external ID** (Q13) for
+        Salesforce. `salesforceId` stays null until the worker gets Salesforce's answer.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CustomerWrite" }
+      responses:
+        "201":
+          description: Created and queued for Salesforce.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Customer" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/customer/{id}/:
+    parameters:
+      - $ref: "#/components/parameters/RecordId"
+    get:
+      tags: [customers]
+      operationId: getCustomer
+      summary: Get one customer
+      description: DRF `RetrieveUpdateAPIView` with `http_method_names = ["get", "patch"]`.
+      responses:
+        "200":
+          description: The customer.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Customer" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [customers]
+      operationId: updateCustomer
+      summary: Edit some fields of a customer
+      description: |
+        Partial update only (no PUT). Only the fields sent are changed, recorded in history and
+        queued for Salesforce. Time = our server clock, actor = the token's user (Q5). Two
+        users editing the same field: last save wins, with no conflict check (Q4).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CustomerWrite" }
+            examples:
+              status:
+                value: { status: Active }
+      responses:
+        "200":
+          description: The customer after the edit.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Customer" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/customer/{id}/history/:
+    parameters:
+      - $ref: "#/components/parameters/RecordId"
+    get:
+      tags: [customers]
+      operationId: getCustomerHistory
+      summary: Every change to a customer, newest first
+      description: |
+        DRF `ListAPIView` over `field_change`. Includes superseded changes (older edits that
+        arrived late) and echoes, so "who changed the city, and when" can always be answered.
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/HistoryField"
+      responses:
+        "200":
+          description: One page of history rows.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FieldChangePage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/contact/:
+    get:
+      tags: [contacts]
+      operationId: listContacts
+      summary: List contacts (cursor-paginated)
+      description: DRF `ListCreateAPIView`. Ordered by `id`. `select_related("customer")`.
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - name: customer
+          in: query
+          schema: { type: integer }
+          description: Portal ID of the customer.
+        - name: email
+          in: query
+          schema: { type: string, format: email }
+          description: Exact match.
+        - name: salesforceId
+          in: query
+          schema: { type: string }
+          description: Exact match.
+      responses:
+        "200":
+          description: One page of contacts.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContactPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [contacts]
+      operationId: createContact
+      summary: Create a contact in the portal
+      description: |
+        Same as creating a customer. The Salesforce upsert refers to the customer by the
+        customer's external ID, so a contact can be sent even before its customer has a
+        Salesforce ID (Q13).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ContactWrite" }
+      responses:
+        "201":
+          description: Created and queued for Salesforce.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Contact" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/contact/{id}/:
+    parameters:
+      - $ref: "#/components/parameters/RecordId"
+    get:
+      tags: [contacts]
+      operationId: getContact
+      summary: Get one contact
+      responses:
+        "200":
+          description: The contact.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Contact" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [contacts]
+      operationId: updateContact
+      summary: Edit some fields of a contact
+      description: Partial update only. Same rules as `updateCustomer`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ContactWrite" }
+            examples:
+              city:
+                summary: The brief's sample portal edit
+                value: { city: Noida }
+      responses:
+        "200":
+          description: The contact after the edit.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Contact" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/contact/{id}/history/:
+    parameters:
+      - $ref: "#/components/parameters/RecordId"
+    get:
+      tags: [contacts]
+      operationId: getContactHistory
+      summary: Every change to a contact, newest first
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/HistoryField"
+      responses:
+        "200":
+          description: One page of history rows.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FieldChangePage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/sync/status/:
+    get:
+      tags: [sync]
+      operationId: getSyncStatus
+      summary: Sync health and the three numbers to watch
+      description: DRF `RetrieveAPIView`. Staff users only (`IsAdminUser`).
+      responses:
+        "200":
+          description: Current sync status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SyncStatus" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/health/:
+    get:
+      tags: [health]
+      operationId: getHealth
+      summary: Liveness check
+      description: Existing `HealthView` (`RetrieveAPIView`), public.
+      security: []
+      responses:
+        "200":
+          description: Postgres and Redis both answered.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+        "503":
+          description: Postgres or Redis did not answer.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+
+components:
+  securitySchemes:
+    portalToken:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: |
+        DRF `TokenAuthentication`, one token per portal user. Send `Authorization: Token <key>`.
+        Assumption Q14 (design §1): portal users authenticate the same way as the webhook.
+    salesforceWebhookToken:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: |
+        DRF `TokenAuthentication` for the dedicated Salesforce integration user (Q11). Only the
+        webhook endpoint accepts it. `Authorization: Token <key>`.
+
+  parameters:
+    RecordId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+      description: Portal record ID.
+    Cursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+      description: Opaque cursor from `next` or `previous`.
+    HistoryField:
+      name: field
+      in: query
+      schema: { type: string }
+      description: Only changes to this field (e.g. `city`).
+
+  responses:
+    ValidationError:
+      description: Invalid input. Nothing was stored.
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties:
+              type: array
+              items: { type: string }
+            example: { email: ["Enter a valid email address."] }
+    Unauthorized:
+      description: Missing or invalid token.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: Authenticated, but this user may not call this endpoint.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: No record with this ID.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [detail]
+      properties:
+        detail: { type: string }
+
+    SyncFields:
+      type: object
+      description: |
+        Server-owned sync fields on every record. Read-only. A `syncState` field (synced, pending,
+        needs_review) is added in phase 7, when the list queryset can prefetch the outbox row
+        for each record. It is not returned yet.
+      properties:
+        id: { type: integer, format: int64, readOnly: true }
+        externalId:
+          type: string
+          format: uuid
+          readOnly: true
+          description: Our ID, sent to Salesforce as the external ID for upserts (Q13).
+        salesforceId:
+          type: [string, "null"]
+          maxLength: 18
+          readOnly: true
+          description: Null until Salesforce has the record.
+        createdAt: { type: string, format: date-time, readOnly: true }
+        createdBy:
+          type: string
+          maxLength: 255
+          readOnly: true
+          description: |
+            Who first set the record: the portal user, or the Salesforce user from the webhook's
+            `changedBy`. Empty for a record created by an admin or a data load. Set by `apply()`.
+        updatedAt: { type: string, format: date-time, readOnly: true }
+        updatedBy:
+          type: string
+          maxLength: 255
+          readOnly: true
+          description: Who last changed any field. Set by `apply()`. Per-field history is in `/history/`.
+
+    CustomerWrite:
+      type: object
+      description: Fields not listed here are ignored (DRF default, `.claude/rules/drf.md`).
+      properties:
+        name: { type: string, maxLength: 255 }
+        status: { type: string, maxLength: 40 }
+        owner:
+          type: string
+          maxLength: 255
+          description: Salesforce owner (user ID or name, as Salesforce sends it).
+
+    Customer:
+      allOf:
+        - $ref: "#/components/schemas/SyncFields"
+        - $ref: "#/components/schemas/CustomerWrite"
+        - type: object
+          required: [id, externalId, name]
+
+    ContactWrite:
+      type: object
+      description: Fields not listed here are ignored (DRF default, `.claude/rules/drf.md`).
+      properties:
+        fullName: { type: string, maxLength: 255 }
+        phone: { type: string, maxLength: 40 }
+        email: { type: string, format: email, maxLength: 254 }
+        city: { type: string, maxLength: 120 }
+        owner: { type: string, maxLength: 255 }
+        customer:
+          type: [integer, "null"]
+          format: int64
+          description: Portal ID of the customer this contact belongs to.
+
+    Contact:
+      allOf:
+        - $ref: "#/components/schemas/SyncFields"
+        - $ref: "#/components/schemas/ContactWrite"
+        - type: object
+          required: [id, externalId, fullName]
+
+    FieldChange:
+      type: object
+      description: |
+        One row of history. Append-only. The model's `object_type` and `record_id` are not
+        serialized: the URL (`/customer/{id}/history/`) already names the record. The outbox
+        and sync state tables are internal and have no schema here.
+      properties:
+        id: { type: integer, format: int64 }
+        field: { type: string, maxLength: 64, examples: [city] }
+        value: { type: [string, "null"], description: Text as stored. }
+        actor: { type: string, maxLength: 255, examples: [finance.user@client.example] }
+        source: { type: string, maxLength: 40, enum: [salesforce, portal] }
+        occurredAt:
+          type: string
+          format: date-time
+          description: Salesforce's occurredAt, or our server clock for portal edits.
+        status:
+          type: string
+          enum: [applied, superseded, echo]
+          description: |
+            applied = became the current value; superseded = older than the current value, kept
+            for history; echo = our own update coming back from Salesforce.
+        eventId: { type: string, maxLength: 128 }
+
+    WebhookEvent:
+      type: object
+      required: [eventId, recordId, objectType, occurredAt, changedBy, changedFields]
+      additionalProperties: true
+      properties:
+        eventId: { type: string, maxLength: 128 }
+        recordId: { type: string, maxLength: 18, description: Salesforce record ID. }
+        objectType: { type: string, enum: [Customer, Contact] }
+        occurredAt: { type: string, format: date-time }
+        changedBy: { type: string, maxLength: 255 }
+        changedFields:
+          type: object
+          description: |
+            Keeps the brief's name. Under assumption Q2 it may hold the **whole record**;
+            `apply()` treats a field as changed only if it differs from the last value synced
+            from Salesforce. Fields outside the brief's scope are ignored. For a Contact,
+            `customer` is the customer's Salesforce ID.
+          additionalProperties: true
+          properties:
+            name: { type: string }
+            status: { type: string }
+            owner: { type: string }
+            fullName: { type: string }
+            phone: { type: string }
+            email: { type: string }
+            city: { type: string }
+            customer: { type: string }
+
+    WebhookResult:
+      type: object
+      required: [eventId, result]
+      properties:
+        eventId: { type: string }
+        result:
+          type: string
+          enum: [applied, duplicate, echo, superseded, no_change]
+          description: |
+            applied = at least one field became current; duplicate = eventId already seen;
+            echo = our own update; superseded = every field older than the current value;
+            no_change = whole record matched the last synced values.
+        appliedFields:
+          type: array
+          items: { type: string }
+
+    CustomerPage:
+      $ref: "#/components/schemas/PageEnvelope"
+    ContactPage:
+      $ref: "#/components/schemas/PageEnvelope"
+    FieldChangePage:
+      $ref: "#/components/schemas/PageEnvelope"
+
+    PageEnvelope:
+      type: object
+      description: DRF `CursorPagination` envelope. No total count.
+      required: [next, previous, results]
+      properties:
+        next: { type: [string, "null"], format: uri }
+        previous: { type: [string, "null"], format: uri }
+        results:
+          type: array
+          items: {}
+
+    SyncStatus:
+      type: object
+      properties:
+        salesforce:
+          type: string
+          enum: [up, down]
+          description: Down after 5 consecutive unreachable failures; a probe runs every 10 s.
+        pendingCount: { type: integer }
+        oldestPendingAgeSeconds:
+          type: [number, "null"]
+          description: Page someone at > 120 s while Salesforce is up (design §11).
+        needsReviewCount:
+          type: integer
+          description: Page someone at > 0 for 1 h (design §11).
+        portalEditsPerSecond:
+          type: number
+          description: Last 5 minutes. Page someone at 30/s sustained (design §11).
+        limiterRate:
+          type: number
+          description: Current run rate in req/s (90, lower after a 429).
+        lastCatchUpAt: { type: [string, "null"], format: date-time }
+
+    Health:
+      type: object
+      properties:
+        postgres: { type: string, examples: [ok] }
+        redis: { type: string, examples: [ok] }

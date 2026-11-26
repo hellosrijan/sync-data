@@ -12,6 +12,7 @@ dependencies = [
     "djangorestframework>=3.18.3",
     "dramatiq-crontab>=1.2.1",
     "dramatiq[redis,watch]>=2.2.1",
+    "httpx>=0.28.1",
     "psycopg[binary]>=3.3.9",
 ]
 

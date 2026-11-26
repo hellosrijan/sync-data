@@ -9,6 +9,7 @@ on:
       - "wiki/**"
       - "README.md"
       - "docs/design.md"
+      - "docs/build-plan.md"
       - "scripts/build-wiki.sh"
       - ".github/workflows/wiki.yml"
   workflow_dispatch:

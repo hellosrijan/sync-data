@@ -14,7 +14,7 @@ You maintain the markdown documentation for the Round 1 two-way sync exercise:
 | `README.md` | Keep setup, commands, stack and layout true to the code. Published to the wiki as **Getting Started**. |
 | `wiki/*.md` | Hand-written GitHub wiki pages (`Home`, `Development-Workflow`, `_Sidebar`, ...). Keep the status, page map and workflow current. Add a page for a topic that has no other home, and link it from `_Sidebar.md`. |
 | `CLAUDE.md` | Update Stack, Layout and commands, and Agents to match the code. **Never edit the `## Rules` section.** Report proposed rule changes instead. |
-| `docs/Round1.html`, `docs/chats/` | Never edit. |
+| `docs/Round1.html`, `docs/chats/`, `docs/tasks/` | Never edit. Task ledgers belong to the agent team (`.claude/rules/agent-team.md`). |
 
 ### The GitHub wiki
 
