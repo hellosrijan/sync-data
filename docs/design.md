@@ -6,7 +6,9 @@ tasks 1.2 to 1.7 (ledgers T-001 and T-002). That covers the six models and their
 the audit columns `created_by` and `updated_by`, token authentication, admin, the `api/v1/` URL layout,
 serializers and `GET /api/v1/health/`. Phase 2 is built (ledger T-003): `apply()` (`src/sync/services.py`),
 the rules core, with no network. Phase 3 is built (ledger T-004): `WebhookView` at
-`/api/v1/webhooks/salesforce/`, `WebhookEventSerializer`, customer linkage, and dedupe purge task (160 tests passing, 8 marked `brief`).
+`/api/v1/webhooks/salesforce/`, `WebhookEventSerializer`, customer linkage, and dedupe purge task.
+Phase 4 is built (ledger T-005): `FakeSalesforce` test double (`src/sync/tests/fakes.py`), `MockTransport` and
+`ThreadingHTTPServer` fixtures, failure modes, and scenario builders (`src/sync/tests/scenarios.py`) (171 tests passing, 9 marked `brief`).
 The outbound worker and catch-up are not built yet.
 Decided: §5 to §9; Q4 to Q9 and Q11 in §1;
 all three metrics in §11. Q1 to Q3, Q10, Q12 and Q13 are recorded as assumptions, and §10 is
@@ -113,8 +115,9 @@ gets 401. Health opts out with `AllowAny`. The Salesforce integration user is in
 Done (phase 0): Compose stack with Postgres, Redis (AOF on) and the worker; Django project; health endpoint;
 worker reload override. Phase 1 done (T-001, T-002): models, audit columns, auth, admin, URL layout,
 serializers, skills and the chat-export change. Phase 2 built (T-003): `apply()`, with its tests. Phase 3
-built (T-004): `WebhookView`, `WebhookEventSerializer`, customer linkage, and dedupe retention task (160 tests passing,
-8 marked `brief`). Not built: phases 4 to 9. Full phases, tasks and subtasks: [`build-plan.md`](build-plan.md).
+built (T-004): `WebhookView`, `WebhookEventSerializer`, customer linkage, and dedupe retention task. Phase 4
+built (T-005): `FakeSalesforce` test double, `MockTransport`, failure modes, and scenario builders (171 tests passing,
+9 marked `brief`). Not built: phases 5 to 9. Full phases, tasks and subtasks: [`build-plan.md`](build-plan.md).
 
 Riskiest first:
 
@@ -417,10 +420,10 @@ Left out for now:
   is Python 3.14 with Django. This is the user's decision, recorded as a deviation. It is not a
   design choice.
 
-Built in scope: inbound webhook endpoint and dedupe retention (phase 3, T-004), `apply()`
+Built in scope: FakeSalesforce test double and scenarios (phase 4, T-005),
+inbound webhook endpoint and dedupe retention (phase 3, T-004), `apply()`
 rules core (phase 2, T-003), foundations, models, admin and auth (phase 1, T-001, T-002).
-Not built yet (in scope, not left out): FakeSalesforce test double and scenarios (phase 4),
-outbound actors, the shared rate limiter, the outage probe (phase 5), catch-up (phase 6),
+Not built yet (in scope, not left out): outbound actors, the shared rate limiter, the outage probe (phase 5), catch-up (phase 6),
 portal API views (phase 7), and the demo script (phase 8). The sync rules themselves in §5 to §9
 are built at the database level in `apply()` (`src/sync/services.py`, phase 2, T-003) and exposed
 inbound via `WebhookView` (`src/sync/views.py`, phase 3, T-004).

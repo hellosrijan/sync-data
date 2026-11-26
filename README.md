@@ -7,9 +7,9 @@ yet). Design targets: 5 million
 records, a 30-second sync window while both sides are up, and surviving a 6-hour Salesforce outage.
 The brief is in [`docs/Round1.html`](docs/Round1.html).
 
-Status: phases 0 to 3 are built. The models, admin, token authentication, URL layout, serializers,
+Status: phases 0 to 4 are built. The models, admin, token authentication, URL layout, serializers,
 `apply()` (`src/sync/services.py`), the inbound webhook endpoint (`POST /api/v1/webhooks/salesforce/`),
-customer linkage, and dedupe retention task are built (160 tests passing, including 8 marked `brief`).
+customer linkage, dedupe retention task, `FakeSalesforce` test double, and scenario builders are built (171 tests passing, including 9 marked `brief`).
 The outbound worker and catch-up are not built yet.
 The build plan and its checklist are in [`docs/build-plan.md`](docs/build-plan.md).
 
@@ -79,9 +79,12 @@ the Postgres credentials and ports are defined once.
 ```sh
 docker compose up -d --wait   # the health tests use the real Postgres and Redis
 uv run pytest -q
+uv run pytest -m brief        # run tests for the brief's required checks (9 tests)
 ```
 
 pytest-django creates a separate test database, so the tests never touch your data.
+Salesforce is faked inside the test suite (`src/sync/tests/fakes.py`, build plan phase 4)
+with no extra app or container.
 
 ## Layout
 
@@ -92,7 +95,8 @@ src/
   sync/        the sync app: models (Customer, Contact, ChangeEvent, FieldChange, Outbox,
                SyncState), admin, serializers, permissions, services (apply() and rules core),
                views (WebhookView), tasks (purge_expired_change_events), urls,
-               create_integration_user command, tests
+               create_integration_user command, tests (including fakes.py, scenarios.py,
+               test_fakes.py)
   utils/       shared bits: api/v1/health/ endpoint (views, urls, serializers), rundramatiq
                override (fixes --reload), tests
 docs/          Round1.html (the brief), design.md (design doc), build-plan.md (phases and

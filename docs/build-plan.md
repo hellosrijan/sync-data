@@ -349,37 +349,37 @@ is available to tests, with **no extra app or container** (user decision). The b
 
 ### 4.1 `FakeSalesforce` test double
 Owner: Phoebe → Ross. Depends on: 1.1.2.
-- [ ] 4.1.1 `src/sync/tests/fakes.py`: in-memory records keyed by Salesforce ID and external ID,
+- [x] 4.1.1 `src/sync/tests/fakes.py`: in-memory records keyed by Salesforce ID and external ID,
   with a modified time and modified-by per record. Supports the calls `SalesforceClient` makes:
   upsert by external ID (Q13), update by ID, and a "changed since T" query paged at 2,000
-  records (Q3).
-- [ ] 4.1.2 Plugs into the real client through `httpx.MockTransport` (built into httpx), so tests
-  run our actual `SalesforceClient` code with no network.
-- [ ] 4.1.3 A pytest fixture that serves the same fake over real HTTP on `localhost` (stdlib
-  `ThreadingHTTPServer`), for the one test that needs a separate worker process (5.5).
+  records (Q3). *Done 2026-11-27.*
+- [x] 4.1.2 Plugs into the real client through `httpx.MockTransport` (built into httpx), so tests
+  run our actual `SalesforceClient` code with no network. *Done 2026-11-27.*
+- [x] 4.1.3 A pytest fixture that serves the same fake over real HTTP on `localhost` (stdlib
+  `ThreadingHTTPServer`), for the one test that needs a separate worker process (5.5). *Done 2026-11-27.*
 
 **Done when:** upserting twice with the same external ID gives one record; the query pages
 correctly; the same test passes through the transport and through the local server.
 
 ### 4.2 Failure modes
 Owner: Phoebe → Ross. Depends on: 4.1.
-- [ ] 4.2.1 Per-test switches: `down` (connection refused), `slow` (delay), `throttle` (429 with
-  `Retry-After`), `error` (5xx), `reject` (400 for a given record), `auth` (401).
-- [ ] 4.2.2 A call log with timestamps, so tests can assert what was sent and measure the request
-  rate.
+- [x] 4.2.1 Per-test switches: `down` (connection refused), `slow` (delay), `throttle` (429 with
+  `Retry-After`), `error` (5xx), `reject` (400 for a given record), `auth` (401). *Done 2026-11-27.*
+- [x] 4.2.2 A call log with timestamps, so tests can assert what was sent and measure the request
+  rate. *Done 2026-11-27.*
 
 **Done when:** each mode produces the documented response, and the call log records it.
 
 ### 4.3 Scenario builders
 Owner: Phoebe → Ross. Depends on: 4.1, 3.1.
-- [ ] 4.3.1 `src/sync/tests/scenarios.py`: `sales_edit()` changes a record in the fake and returns
+- [x] 4.3.1 `src/sync/tests/scenarios.py`: `sales_edit()` changes a record in the fake and returns
   the matching webhook payload — only the changed fields in `changedFields` (Q2, revised
   2026-11-27), with `eventId`, `occurredAt` and `changedBy`. A separate helper builds the
   whole-record fallback case (Q2's "other way") for the one test that needs it. Our own
-  writes produce an echo payload with `changedBy` = the integration user.
-- [ ] 4.3.2 Helpers for a duplicate (same payload twice) and an older event delivered after a newer
-  one.
-- [ ] 4.3.3 Register the pytest marker `brief` for the brief's four checks.
+  writes produce an echo payload with `changedBy` = the integration user. *Done 2026-11-27.*
+- [x] 4.3.2 Helpers for a duplicate (same payload twice) and an older event delivered after a newer
+  one. *Done 2026-11-27.*
+- [x] 4.3.3 Register the pytest marker `brief` for the brief's four checks. *Done 2026-11-27.*
 
 **Done when:** a scenario test posts a sales edit to the webhook endpoint and it appears in the
 portal.
@@ -577,7 +577,7 @@ checkboxes after every task.
 | 1 Foundations | ✅ Done: 1.1–1.7 all complete (skills, chat export, ledgers T-001, T-002) |
 | 2 `apply()` | ✅ Done: `apply()`, `Change`/`Result`, outbox + sync-loop rule built and verified (T-003, 140 tests, 7 `brief`-marked, 15 concurrency re-runs clean) |
 | 3 Inbound webhook | ✅ Done: WebhookView, WebhookEventSerializer, token auth, customer linkage, dedupe purge task (T-004, 160 tests, 8 `brief`-marked) |
-| 4 Test scenarios | Not started |
+| 4 Test scenarios | ✅ Done: FakeSalesforce double (fakes.py), MockTransport, failure modes, scenarios (T-005, 171 tests, 9 `brief`-marked) |
 | 5 Outbound and outage | Not started |
 | 6 Catch-up | Not started |
 | 7 Portal API | Not started |
