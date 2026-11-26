@@ -59,12 +59,22 @@ paths:
             schema: { $ref: "#/components/schemas/WebhookEvent" }
             examples:
               contactPhone:
-                summary: The brief's sample, whole-record form (Q2)
+                summary: The brief's own sample, verbatim (changed-fields-only form, Q2)
                 value:
                   eventId: evt_1001
                   recordId: 0031A00000Abc
                   objectType: Contact
                   occurredAt: "2026-11-02T11:30:04.000Z"
+                  changedBy: sales.user@client.example
+                  changedFields:
+                    phone: "+919876543210"
+              contactWholeRecord:
+                summary: Fallback case - a webhook carrying the whole record instead (Q2's "other way")
+                value:
+                  eventId: evt_1002
+                  recordId: 0031A00000Abc
+                  objectType: Contact
+                  occurredAt: "2026-11-02T11:35:04.000Z"
                   changedBy: sales.user@client.example
                   changedFields:
                     fullName: Asha Rao
@@ -510,10 +520,12 @@ components:
         changedFields:
           type: object
           description: |
-            Keeps the brief's name. Under assumption Q2 it may hold the **whole record**;
-            `apply()` treats a field as changed only if it differs from the last value synced
-            from Salesforce. Fields outside the brief's scope are ignored. For a Contact,
-            `customer` is the customer's Salesforce ID.
+            Keeps the brief's name. Assumption Q2 (revised): holds **only the changed fields**,
+            matching the brief's own sample. `apply()` treats a field as changed only if it
+            differs from the last value synced from Salesforce, so the rule is correct even if
+            a webhook ever carries the whole record instead (see the `contactWholeRecord`
+            example). Fields outside the brief's scope are ignored. For a Contact, `customer`
+            is the customer's Salesforce ID.
           additionalProperties: true
           properties:
             name: { type: string }
@@ -536,7 +548,7 @@ components:
           description: |
             applied = at least one field became current; duplicate = eventId already seen;
             echo = our own update; superseded = every field older than the current value;
-            no_change = whole record matched the last synced values.
+            no_change = every field in the payload already matched the last synced value.
         appliedFields:
           type: array
           items: { type: string }

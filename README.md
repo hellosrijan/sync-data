@@ -7,9 +7,10 @@ yet). Design targets: 5 million
 records, a 30-second sync window while both sides are up, and surviving a 6-hour Salesforce outage.
 The brief is in [`docs/Round1.html`](docs/Round1.html).
 
-Status: phase 1 in progress. The models, admin, token authentication, URL layout and serializers
-are built. No sync logic yet. The build plan and its checklist are in
-[`docs/build-plan.md`](docs/build-plan.md).
+Status: phases 0 to 2 are built. The models, admin, token authentication, URL layout and serializers
+are built, and so is `apply()` (`src/sync/services.py`), the rules core with no network (140 tests passing,
+including 7 marked `brief`). The webhook endpoint, the outbound worker and catch-up are not built yet.
+The build plan and its checklist are in [`docs/build-plan.md`](docs/build-plan.md).
 
 ## Stack
 
@@ -87,8 +88,8 @@ src/
   manage.py
   config/      Django project: settings, urls, wsgi/asgi
   sync/        the sync app: models (Customer, Contact, ChangeEvent, FieldChange, Outbox,
-               SyncState), admin, serializers, permissions, urls, create_integration_user command,
-               tests
+               SyncState), admin, serializers, permissions, services (apply() and rules core),
+               urls, create_integration_user command, tests
   utils/       shared bits: api/v1/health/ endpoint (views, urls, serializers), rundramatiq
                override (fixes --reload), tests
 docs/          Round1.html (the brief), design.md (design doc), build-plan.md (phases and

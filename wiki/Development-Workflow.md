@@ -12,7 +12,8 @@
 ## Agent team for build work
 
 Build tasks are given to the team with `/monica <task>`. The team runs in Claude Code only;
-`.opencode/` has no wrappers for it yet.
+`.opencode/` has no wrappers for it yet. All agents run on `haiku` (cheaper, user decision)
+except `agent-monica`, which runs on `sonnet`.
 
 | Agent | Role |
 |---|---|
@@ -78,7 +79,7 @@ docker compose up -d --wait
 uv run pytest -q
 ```
 
-Tests live in `src/<app>/tests/`. `uv run pytest -q` runs them all. The health tests use the real Postgres and Redis from Compose.
+Tests live in `src/<app>/tests/`. `uv run pytest -q` runs them all (140 passed, 7 marked `brief`). The health tests use the real Postgres and Redis from Compose.
 pytest-django creates a separate test database. Salesforce is faked inside the tests
 (`src/sync/tests/fakes.py`, build plan phase 4): no extra app or container.
 
@@ -96,6 +97,9 @@ pytest-django creates a separate test database. Salesforce is faked inside the t
   for the user: accept that gap for the brief's chat requirement, or change the decision.
 - **Portal API login.** A default, not yet confirmed: a DRF token per portal user ([Design](Design)
   Q14). It is still unticked in the build plan's review list.
+- **Phase 2 defaulted items.** Q15 (`SALESFORCE_INTEGRATION_USER` setting), Q16 (unknown record raises
+  `UnknownRecord` and rolls back), Q17 (echo never creates a record), and Q18 (merging portal update into
+  pending `create` outbox row keeps `operation=create`) were accepted in Phase 2 (T-003).
 
 ## How this wiki is published
 

@@ -25,3 +25,4 @@ dev = ["pytest>=9.2.0", "pytest-django>=4.14.0"]
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "config.settings"
 pythonpath = ["src"]
+markers = ["brief: the brief's four required checks (`pytest -m brief` is the demo set)"]

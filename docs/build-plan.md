@@ -42,11 +42,15 @@ The user asked that work never stops for a question unless it's critical.
 | # | Question | Default (recorded as an assumption) |
 |---|---|---|
 | Q14 | How do portal users authenticate? | DRF `TokenAuthentication`, one token per portal user, same mechanism as the webhook (Q11). No UI this weekend, so no sessions or SSO. |
+| Q15 | Setting for integration user (echo detection) | `SALESFORCE_INTEGRATION_USER` in `settings.py` (env-backed, placeholder default; design §1 Q15). |
+| Q16 | Unknown record on portal save or Salesforce update | Raise `UnknownRecord` and roll back transaction; nothing created, `ChangeEvent` not kept (design §1 Q16). |
+| Q17 | Echo on create for unknown record | Never create a record; raise `UnknownRecord` and roll back (design §1 Q17). |
+| Q18 | Merging portal update into pending create outbox row | Keeps `operation="create"`, merging fields as a sorted union (design §1 Q18). |
 | — | Build order (design §3) | This plan's phase order, riskiest first (see below). |
-| — | Where is "what changed" worked out for a whole-record webhook? | **Inside** `apply()`, after `SELECT … FOR UPDATE`, so two webhooks for one record can't both compare against the same old value. (A correction found in review.) |
+| — | Where is "what changed" worked out for an inbound webhook? | **Inside** `apply()`, after `SELECT … FOR UPDATE`, so two webhooks for one record can't both compare against the same old value. (A correction found in review.) |
 | — | Echo detection on catch-up | Field by field: a field whose Salesforce value equals the value we last sent is our echo. Not record-level. (A correction found in review.) |
 | — | Catch-up gives only a record-level modified time | Accept as a known limit (design "Known limits"). Catch-up only runs after an outage, or as the 5-minute safety net. |
-| — | Payload key for a whole-record webhook | Keep the brief's `changedFields` (`openapi.yml`). |
+| — | Payload key for an inbound webhook | Keep the brief's `changedFields` (`openapi.yml`), carrying only the changed fields (Q2, revised 2026-11-27 to match the brief's sample). |
 | — | `owner` and `status` values | Free text, as Salesforce sends them (owner = Salesforce user ID or name). |
 | — | A contact whose customer isn't in the portal yet | Store the customer's Salesforce ID in `customer_salesforce_id`. Link the FK when that customer arrives. |
 | — | A portal contact created before its customer has a Salesforce ID | The upsert refers to the customer by external ID (part of Q13). No ordering wait. |
@@ -60,6 +64,10 @@ Tick one when you accept it. To change one, tell Monica; she updates the plan an
 - [ ] Q14 portal login: a DRF token per portal user
 - [ ] "What changed" is worked out inside the record lock
 - [ ] Catch-up echo check is field by field
+- [ ] Echo setting: `SALESFORCE_INTEGRATION_USER` (name and placeholder value, not in the brief) (T-003, Q15)
+- [ ] Unknown record: a portal change for a missing pk, or a Salesforce update for an unknown id, raises `UnknownRecord` and rolls back, instead of creating a row (T-003, Q16)
+- [ ] An echo never creates a record: a Salesforce `create` echo for an unknown id raises instead of creating (T-003, Q17)
+- [ ] A portal update merged into a pending `create` outbox row keeps `create`, not `update` (T-003, Q18)
 - [ ] Catch-up's record-level modified time is accepted as a known limit
 - [ ] Requeue (admin action) skips a `needs_review` row whose record already has a pending row, with a warning message, rather than failing on the partial unique constraint (T-001)
 - [ ] Serializers render camelCase names now (explicit `source=`, per `openapi.yml`) instead of in phase 7 (T-001)
@@ -92,7 +100,7 @@ models and contract.
 
 | App | Holds | Why separate |
 |---|---|---|
-| `sync` (exists) | Customer, Contact, ChangeEvent, FieldChange, Outbox, SyncState; `apply()`; the webhook view; the portal API views; Dramatiq tasks (outbound, probe, catch-up); the limiter; `SalesforceClient` | The sync rules and the records they protect change together. One migration chain. |
+| `sync` (exists) | Customer, Contact, ChangeEvent, FieldChange, Outbox, SyncState; `services.py` (`apply()`, `Change`, `Result`, rules core); the webhook view; the portal API views; Dramatiq tasks (outbound, probe, catch-up); the limiter; `SalesforceClient` | The sync rules and the records they protect change together. One migration chain. |
 | Test code, **not an app**: `src/sync/tests/` | `fakes.py` (`FakeSalesforce`, a test double for Salesforce) and `scenarios.py` (webhook payload builders). Imported only by tests and `scripts/demo.sh`. | User decision: no fake-Salesforce app or container, because it would be confusing. The fake lives with the tests that use it. |
 | `utils` (exists) | `/api/v1/health/` (moved under the versioned prefix), the `rundramatiq` override | `urls.py` and `serializers.py` added |
 
@@ -143,22 +151,26 @@ model. `openapi.yml` validates.
 
 ### 1.1 Close the team's skill gaps
 Owner: main session (no `/monica`, because it changes the team itself). Depends on: nothing.
-- [ ] 1.1.1 Write `.claude/skills/sync-engine/SKILL.md`: `apply()` structure, row locking,
+- [x] 1.1.1 Write `.claude/skills/sync-engine/SKILL.md`: `apply()` structure, row locking,
   per-field meta, the outbox worker (`SKIP LOCKED`, leases, Dramatiq retries off), the Redis
-  token-bucket limiter, the probe and down state, and catch-up.
-- [ ] 1.1.2 Write `.claude/skills/sync-test-scenarios/SKILL.md`: the `FakeSalesforce` test double
+  token-bucket limiter, the probe and down state, and catch-up. *Done 2026-11-27.*
+- [x] 1.1.2 Write `.claude/skills/sync-test-scenarios/SKILL.md`: the `FakeSalesforce` test double
   (state, failure modes, `httpx.MockTransport`, local-server fixture), the scenario builders,
-  and the `brief` pytest marker.
-- [ ] 1.1.3 Write `.claude/skills/sync-testing/SKILL.md`: injected clock, transactional
-  concurrency tests, restart-while-down, measuring the request rate, the brief's four checks.
+  and the `brief` pytest marker. *Done 2026-11-27.*
+- [x] 1.1.3 Write `.claude/skills/sync-testing/SKILL.md`: injected clock, transactional
+  concurrency tests, restart-while-down, measuring the request rate, the brief's four checks. *Done 2026-11-27.*
 - [x] 1.1.4 Update `.claude/rules/agent-team.md` with the "keep moving" policy above, and replace
   the "portal auth isn't decided" line in `drf.md` with Q14. *Done 2026-11-26.*
-- [ ] 1.1.5 Extend the export block in `.claude/agents/chat-export.md` to include subagent chats
+- [x] 1.1.5 Extend the export block in `.claude/agents/chat-export.md` to include subagent chats
   (`<session>/subagents/*.jsonl`), so every prompt the team sends is in the submission. The
-  same redaction applies.
+  same redaction applies. *Done 2026-11-27.*
 
 **Done when:** the three skills exist; the rules say decide-and-continue; a test export
-includes subagent chats.
+includes subagent chats. **Done 2026-11-27**: verified a test export of 31 real subagent
+transcripts from this session's own history, confirmed no real secrets leaked (including a
+targeted redaction added for the one command — `create_integration_user` — that prints a bare
+secret with no label), and confirmed the fix for subagents' own `isSidechain: true` tagging
+(the main-session filter would otherwise have dropped every subagent message).
 
 ### 1.2 Settings and authentication
 Owner: Phoebe → Ross. Depends on: 1.1.
@@ -244,23 +256,25 @@ sets still equal the `openapi.yml` schemas.
 
 ### 2.1 The `Change` input and `apply()` skeleton
 Owner: Phoebe → Ross. Depends on: 1.3.
-- [ ] 2.1.1 A `Change` dataclass: `source`, `event_id`, `object_type`, `record_ref` (Salesforce ID
-  or portal ID), `occurred_at`, `actor`, `fields`, `operation`.
-- [ ] 2.1.2 `apply()` in one transaction: insert into `ChangeEvent` (a duplicate stops here),
-  then `SELECT … FOR UPDATE` the record (creating it if new).
+- [x] 2.1.1 A `Change` dataclass: `source`, `event_id`, `object_type`, `record_ref` (Salesforce ID
+  or portal ID), `occurred_at`, `actor`, `fields`, `operation`. *Done 2026-11-27.*
+- [x] 2.1.2 `apply()` in one transaction: insert into `ChangeEvent` (a duplicate stops here),
+  then `SELECT … FOR UPDATE` the record (creating it if new). An unknown portal pk or an unknown
+  Salesforce id on an update raises and rolls back (`defaulted`, Q16); an echo never creates
+  (`defaulted`, Q17). *Done 2026-11-27.*
 
 **Done when:** sending the same `event_id` twice gives one `ChangeEvent`, and the second call
 reports `duplicate`.
 
 ### 2.2 Per-field rules
 Owner: Phoebe → Ross. Depends on: 2.1.
-- [ ] 2.2.1 Salesforce source: work out the changed fields **inside the lock**, comparing each
-  value with `field_meta[f].sf_value` (Q2).
-- [ ] 2.2.2 Echo: if `actor` is the integration user, record the change as `echo` and apply nothing.
-- [ ] 2.2.3 For each changed field: always write a `FieldChange`. Apply it if `occurred_at` is newer
-  than the field's stored time, otherwise mark it `superseded`. An exact tie goes to Salesforce.
-- [ ] 2.2.4 Update `field_meta`: `at`, `source`, `by`, and `sf_value` for Salesforce changes. Also
-  set `created_by` (on create) and `updated_by` (on every applied change) on the record.
+- [x] 2.2.1 Salesforce source: work out the changed fields **inside the lock**, comparing each
+  value with `field_meta[f].sf_value` (Q2). *Done 2026-11-27.*
+- [x] 2.2.2 Echo: if `actor` is the integration user, record the change as `echo` and apply nothing. The setting is `SALESFORCE_INTEGRATION_USER` with a placeholder value (`defaulted`, Q15). *Done 2026-11-27.*
+- [x] 2.2.3 For each changed field: always write a `FieldChange`. Apply it if `occurred_at` is newer
+  than the field's stored time, otherwise mark it `superseded`. An exact tie goes to Salesforce. *Done 2026-11-27.*
+- [x] 2.2.4 Update `field_meta`: `at`, `source`, `by`, and `sf_value` for Salesforce changes. Also
+  set `created_by` (on create) and `updated_by` (on every applied change) on the record. *Done 2026-11-27.*
 
 **Done when:** these tests pass:
 - the brief's scenario: the city set in the portal survives a later phone webhook;
@@ -270,10 +284,10 @@ Owner: Phoebe → Ross. Depends on: 2.1.
 
 ### 2.3 Outbox write and the loop rule
 Owner: Phoebe → Ross. Depends on: 2.2.
-- [ ] 2.3.1 A portal change with at least one applied field → upsert the record's single `pending`
-  outbox row, merging the field list.
-- [ ] 2.3.2 A Salesforce change → never an outbox row.
-- [ ] 2.3.3 A portal create → an outbox row with `operation=create`.
+- [x] 2.3.1 A portal change with at least one applied field → upsert the record's single `pending`
+  outbox row, merging the field list. *Done 2026-11-27.*
+- [x] 2.3.2 A Salesforce change → never an outbox row. *Done 2026-11-27.*
+- [x] 2.3.3 A portal create → an outbox row with `operation=create`. A later portal update merged into that pending row keeps `create` (`defaulted`, Q18). *Done 2026-11-27.*
 
 **Done when:**
 - a webhook write creates 0 outbox rows;
@@ -282,9 +296,10 @@ Owner: Phoebe → Ross. Depends on: 2.2.
 
 ### 2.4 Concurrency
 Owner: Ross. Depends on: 2.3.
-- [ ] 2.4.1 Transactional test: two threads apply changes to the same record, and the final state
-  and history are correct.
-- [ ] 2.4.2 Two whole-record webhooks for one record at the same time: no lost field.
+- [x] 2.4.1 Transactional test: two threads apply changes to the same record, and the final state
+  and history are correct. *Done 2026-11-27.*
+- [x] 2.4.2 Two webhooks for one record at the same time (each carrying one or several changed
+  fields): no lost field. *Done 2026-11-27.*
 
 **Done when:** both tests pass reliably (10 runs in a row).
 
@@ -354,7 +369,9 @@ Owner: Phoebe → Ross. Depends on: 4.1.
 ### 4.3 Scenario builders
 Owner: Phoebe → Ross. Depends on: 4.1, 3.1.
 - [ ] 4.3.1 `src/sync/tests/scenarios.py`: `sales_edit()` changes a record in the fake and returns
-  the whole-record webhook payload (Q2) with `eventId`, `occurredAt` and `changedBy`. Our own
+  the matching webhook payload — only the changed fields in `changedFields` (Q2, revised
+  2026-11-27), with `eventId`, `occurredAt` and `changedBy`. A separate helper builds the
+  whole-record fallback case (Q2's "other way") for the one test that needs it. Our own
   writes produce an echo payload with `changedBy` = the integration user.
 - [ ] 4.3.2 Helpers for a duplicate (same payload twice) and an older event delivered after a newer
   one.
@@ -553,8 +570,8 @@ checkboxes after every task.
 |---|---|
 | 0 Scaffold | ✅ Done: Django + DRF, uv, compose, `/health/`, agents, `/ready-to-commit`, wiki CI |
 | Planning | ✅ Done: architecture, design Q1–Q14, agent team, this plan, apps/models/endpoints, `openapi.yml` |
-| 1 Foundations | ⏳ In progress: 1.2–1.7 done (ledgers T-001, T-002). Remaining: 1.1.1–1.1.3 and 1.1.5 (skills and chat export) |
-| 2 `apply()` | Not started |
+| 1 Foundations | ✅ Done: 1.1–1.7 all complete (skills, chat export, ledgers T-001, T-002) |
+| 2 `apply()` | ✅ Done: `apply()`, `Change`/`Result`, outbox + sync-loop rule built and verified (T-003, 140 tests, 7 `brief`-marked, 15 concurrency re-runs clean) |
 | 3 Inbound webhook | Not started |
 | 4 Test scenarios | Not started |
 | 5 Outbound and outage | Not started |

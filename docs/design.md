@@ -1,12 +1,17 @@
 # Design: two-way sync of customer and contact records
 
 Source of truth: [`Round1.html`](Round1.html). Section order follows the brief's outline.
-Status: **design in progress**. Phase 0 is built (Compose stack, Django project). Phase 1 is in progress:
-tasks 1.2 to 1.7 are built (ledgers T-001 and T-002). That covers the six models and their constraints,
+Status: **design in progress**. Phase 0 is built (Compose stack, Django project). Phase 1 is built:
+tasks 1.2 to 1.7 (ledgers T-001 and T-002). That covers the six models and their constraints,
 the audit columns `created_by` and `updated_by`, token authentication, admin, the `api/v1/` URL layout,
-serializers and `GET /api/v1/health/`. No sync logic yet. Decided: §5 to §9; Q4 to Q9 and Q11 in §1;
+serializers and `GET /api/v1/health/`. Phase 2 is built (ledger T-003): `apply()` (`src/sync/services.py`),
+the rules core, with no network (140 tests passing, 7 marked `brief`, 15 concurrency runs clean).
+The webhook view, the outbound worker and catch-up are not built yet.
+Decided: §5 to §9; Q4 to Q9 and Q11 in §1;
 all three metrics in §11. Q1 to Q3, Q10, Q12 and Q13 are recorded as assumptions, and §10 is
-arithmetic on them. Q14 (portal login) is a default assumption from the build plan. §3 and §4 are
+arithmetic on them. Q14 (portal login) is a default assumption from the build plan. Q15 to Q18
+(echo setting, unknown record error/rollback, echo never creates, pending create merge) are default
+assumptions from phase 2 (T-003). §3 and §4 are
 set by the build plan ([`build-plan.md`](build-plan.md)) and the API contract
 ([`openapi.yml`](openapi.yml)). Still TODO: §12 "anything else we cut".
 
@@ -31,7 +36,7 @@ other way.
 | # | Question (from the brief) | Assumption | If the answer is the other way |
 |---|---|---|---|
 | Q1 | Peak edits/sec, and edits/sec in a quiet hour? | **Assumption: peak 10 edits/s** (5 Salesforce, 5 portal); working-hours average 3.5/s; **quiet hour 0.2/s**. Two independent estimates agree: 5M records × 2 % touched per working day ÷ 28,800 s × 3 (peak factor) ≈ 10/s; and about 500 users across both systems (sales and portal) × 1 save per minute at peak ≈ 8/s in total. The 50/50 split is deliberately pessimistic, because only portal edits fill the outbox. | Drain time scales as 360 · r ÷ (90 − r) min (§10). Double the portal rate (10/s) gives 45 min. At 45/s draining takes as long as the outage. At 90/s or more the backlog never drains, and we'd need Salesforce's batch API (another assumption). |
-| Q2 | Does a webhook carry only the changed fields, or the full record? What does the rule do in the other case? | **Assumption (user): the webhook carries the whole record**, the safer case. We don't treat every field as changed. Per field, a value counts as changed only if it differs from **the last value we synced from Salesforce** for that field, which we store per field. Unchanged fields are ignored, so a stale copy of the city in the payload can't overwrite the portal's newer city. Catch-up results are handled the same way. | If a webhook carries only the changed fields (as in the brief's sample), the same rule still works: the comparison just runs over fewer fields. Nothing else changes. |
+| Q2 | Does a webhook carry only the changed fields, or the full record? What does the rule do in the other case? | **Assumption (user, revised 2026-11-27): the webhook carries only the changed fields.** The brief's own sample (`changedFields: {"phone": "..."}`) shows exactly one field, not the whole Contact record, so this now matches the sample rather than the earlier, unevidenced "safer" guess. The rule doesn't actually depend on which is true: per field, a value counts as changed only if it differs from **the last value we synced from Salesforce** for that field (`field_meta[f].sf_value`), which we store per field. That makes the mechanism correct either way — see "if the other way". Catch-up results are handled the same way. | **If a webhook sometimes carries the whole record instead** (this was the original assumption, now reversed): nothing breaks, because the `sf_value` comparison is applied the same way regardless of how many fields are present. An unchanged field resent at its old value is filtered out before it can overwrite a newer portal edit or write a spurious history row. The only cost of being wrong is informational, not correctness: more no-op comparisons than expected. |
 | Q3 | Can we ask Salesforce for records changed during the 6-hour outage, or are missed webhooks gone? | **Assumption only, not decided:** Salesforce has a query for records changed since time T, returning about 2,000 records per call. §10 relies on it for catch-up. | If there is no such query, changes made in Salesforce during the outage are lost unless a webhook already arrived, and path C cannot recover them. |
 | Q4 | Two portal users edit the same field: what does the other user see, and what do we send to Salesforce? | **Decided (user): both saves apply, last save wins.** No conflict check. The save with the later server time is current, and both are written to history with who and when (§7). The other user sees the newer value the next time they load the record, with no warning. Salesforce gets the **current** value (§6). If both saves are pending when the worker runs, that's one call with the final value. A portal save also overwrites a Salesforce change that arrived after the form was opened, because the save is newer. | If users had to be protected from silently overwriting each other, each field would carry the version the user loaded, and a save on a field changed since then would be refused with 409 Conflict, showing the current value and who changed it. |
 | Q5 | A portal edit has no time field: what do we trust for order, and where do the time and the actor come from? | **Decided:** time = our server clock when the save arrives; actor = the logged-in portal user. See §7. | If the portal sent its own time, a wrong client clock could reorder edits; we'd have to trust or correct it. |
@@ -49,6 +54,10 @@ Questions added while writing this doc (not in the brief):
 | Q12 | Are there bulk or mass updates (e.g. reassigning the owner on 50,000 contacts at once)? The brief doesn't mention any. | **Assumption: no.** Edits are interactive, one record per save, at the rates in Q1. | A portal-side bulk update of 50,000 records takes ≈ 9 min at 90 req/s (50,000 ÷ 90 ≈ 556 s), and an interactive edit queued behind it would miss the 30 s target. We'd add two outbox priorities (interactive first), or use Salesforce's batch API (200 records per call: 50,000 ÷ 200 = 250 calls ÷ 90 req/s ≈ 3 s, another assumption). Salesforce-side bulk changes cost nothing, because webhooks aren't capped. |
 | Q13 | A create call times out: did Salesforce create the record? Retrying could create a duplicate. | **Assumption: Salesforce supports upsert by external ID.** Every create carries our portal record ID as an external ID, so a repeat matches the existing record instead of making a new one. This is an API the brief doesn't give (it names only create and update). | Without upsert, a create with an unknown outcome can't be retried safely. It would go to `needs_review` for a person to check, and duplicates would be possible after a crash. |
 | Q14 | How do portal users log in to the portal API? The brief does not say. | **Assumption (default, build plan): DRF `TokenAuthentication`, one token per portal user**, the same mechanism as the webhook (Q11). There's no UI this weekend, so no sessions or SSO. The actor on a portal edit is the token's user (Q5). | With session login or SSO, only the authentication class on the portal views changes. `apply()`, history and the outbox don't depend on how the user logged in. |
+| Q15 | DEFAULTED (T-003): what setting names the Salesforce integration user that echoes are matched against? The brief does not name it. | **Assumption: `SALESFORCE_INTEGRATION_USER`** in `src/config/settings.py`, read from the environment. `.env` and `.env.example` carry a placeholder value (the same key in both). The value is an identifier, not a secret. | If the brief or Salesforce names the integration user differently, rename the setting and the value. Echo matching is one comparison, so nothing else changes. |
+| Q16 | DEFAULTED (T-003): what happens when a portal change names a record that does not exist, or a Salesforce update names an unknown `salesforce_id`? | **Assumption: raise `UnknownRecord` and roll back.** Nothing is created, and the `ChangeEvent` is not kept, so a retry is not reported as a duplicate. Design is silent on an update to an unknown record, and swallowing it would lose data. | If the answer were "create it", a Salesforce update for an unknown id would create a row with partial data. The rollback rule would also change, so a retry would need its own dedupe rule. |
+| Q17 | DEFAULTED (T-003): can an echo create a record? A Salesforce `create` echo (integration user) for an id we do not hold. | **Assumption: no.** An echo never creates a record, so a second copy of a record we already sent never appears. The echo raises `UnknownRecord` as in Q16. | If an echo should create, the record would exist without a real Salesforce change behind it. Allowing it means the echo rule has to write the record, not only history. |
+| Q18 | DEFAULTED (T-003): a portal change merges into a pending outbox row whose operation is `create`. Does the merged row stay `create`? | **Assumption: yes, it stays `create`.** A create that has not been sent yet must still be sent as a create. `operation` is set only when the row is inserted, and a merge changes `fields` alone. | If the merged row became `update`, Salesforce would receive an update for a record it does not have yet. The merge rule would need to check the operation of the earlier row. |
 
 ## 2. Systems, who calls whom, network boundary, interfaces
 
@@ -98,8 +107,9 @@ gets 401. Health opts out with `AllowAny`. The Salesforce integration user is in
 ## 3. Subproblems, in build order
 
 Done (phase 0): Compose stack with Postgres, Redis (AOF on) and the worker; Django project; health endpoint;
-worker reload override. Phase 1 in progress: tasks 1.2 to 1.7 built (T-001, T-002): models, audit columns,
-auth, admin, URL layout, serializers. Open: skills 1.1.1 to 1.1.3 and the chat-export change 1.1.5. Full phases, tasks and subtasks: [`build-plan.md`](build-plan.md).
+worker reload override. Phase 1 done (T-001, T-002): models, audit columns, auth, admin, URL layout,
+serializers, skills and the chat-export change. Phase 2 built (T-003): `apply()`, with its tests. Not built:
+phases 3 to 9. Full phases, tasks and subtasks: [`build-plan.md`](build-plan.md).
 
 Riskiest first:
 
@@ -139,9 +149,9 @@ Column layout (app `sync`, as built in migrations `0001_initial` and `0002_audit
 | `name` | varchar(255) | |
 | `status` | varchar(40) | Free text, as Salesforce sends it |
 | `owner` | varchar(255) | Salesforce user ID or name |
-| `field_meta` | JSONB, default `{}` | Per field: `at` (time of the current value), `source`, `by`, `sf_value` (last value synced from Salesforce; Q2 and the echo check) |
+| `field_meta` | JSONB, default `{}` | Per field: `at` (time of the current value), `source`, `by`, `sf_value` (last value synced from Salesforce; the changed-field check, Q2). Set by a Salesforce or catch-up change, and kept as is by a portal edit. Absent until Salesforce has sent that field. |
 | `created_at`, `updated_at` | timestamptz | `auto_now_add` / `auto_now` |
-| `created_by`, `updated_by` | varchar(255), default empty | Who first set the record and who last changed it: a portal user, or the Salesforce `changedBy`. Set by `apply()` (phase 2). The per-field trail stays in `field_change.actor` and `field_meta.by`; these two answer "who created this?" without a lookup. Returned by the API as `createdBy` / `updatedBy`. |
+| `created_by`, `updated_by` | varchar(255), default empty | Who first set the record and who last changed it: a portal user, or the Salesforce `changedBy`. Set by `apply()` (built in phase 2, T-003): `created_by` only on create, `updated_by` on every change that applied a field (not on a duplicate, no-change or echo). The per-field trail stays in `field_change.actor` and `field_meta.by`; these two answer "who created this?" without a lookup. Returned by the API as `createdBy` / `updatedBy`. |
 
 **Contact**: the same sync columns (`id`, `external_id`, `salesforce_id`, `field_meta`,
 timestamps, `created_by`, `updated_by`), plus `full_name` varchar(255), `phone` varchar(40), `email` varchar(254, indexed),
@@ -173,7 +183,8 @@ catch-up watermark, the Salesforce up/down state and the consecutive-failure cou
 
 ## 5. Inbound path: webhook to our database
 
-Not built. Brief: "Our endpoint has to accept it, check it, and apply it before anything is
+Steps 1 to 3 and 6 are not built (the endpoint is phase 3). Steps 4 and 5 are built (phase 2, T-003):
+step 4 runs inside `apply()`'s record lock, and step 5 is `apply()` itself. Brief: "Our endpoint has to accept it, check it, and apply it before anything is
 stored." Webhooks can arrive twice and out of order, and `occurredAt` is Salesforce's time for
 the event.
 
@@ -186,8 +197,10 @@ Decided. Steps 1 to 4 run before anything is stored. Step 5 is the first write.
 3. **Validate:** a DRF serializer checks `eventId`, `recordId`, `objectType` (Customer or Contact),
    `occurredAt` (ISO 8601) and `changedBy`. Fields outside the brief's scope are ignored. A
    malformed payload gets **400** and nothing is stored.
-4. **Work out what changed (Q2):** the webhook carries the whole record (assumption). A field
-   counts as changed only if its value differs from the last value we synced from Salesforce.
+4. **Work out what changed (Q2):** the webhook carries only the changed fields (assumption,
+   matches the brief's sample). A field counts as changed only if its value differs from the
+   last value we synced from Salesforce — the same comparison that makes the rule correct even
+   if a webhook ever carries the whole record instead.
 5. **Apply:** `apply()` runs the duplicate, echo, ordering and history rules (§7 to §9) in one
    transaction.
 6. **Respond 200** after the commit, also for a duplicate, so Salesforce stops redelivering it.
@@ -241,7 +254,7 @@ Salesforce is marked **down** after 5 consecutive unreachable failures. Sending 
 runs every 10 s. When the probe succeeds, catch-up runs, then every pending row is due at once
 (§10).
 
-The outbox model is built (task 1.3.2). Not built yet: the outbound task, the limiter and the probe. The fields in an
+The outbox model is built (task 1.3.2), and `apply()` writes its rows (phase 2). Not built yet: the outbound task, the limiter and the probe. The fields in an
 outbound call are the fields the portal user changed, read at their current values.
 `src/config/settings.py` already turns on Dramatiq's `Retries` middleware for every actor
 (`max_retries` 20 by default). The outbound task must set `max_retries=0`.
@@ -269,8 +282,10 @@ Decided. Full mechanism: [Architecture](https://github.com/hellosrijan/sync-data
 Decided.
 
 - **Duplicate:** `change_event.event_id` is unique. The key is `eventId` for a webhook, a new
-  UUID for a portal save, and `record_id` + Salesforce modified time for a catch-up result. A
-  repeat hits the unique constraint, so we return OK and do nothing.
+  UUID for a portal save, and `record_id` + Salesforce modified time for a catch-up result. In
+  `apply()`, inserting into `change_event` runs in a nested savepoint (`transaction.atomic()`);
+  a repeat hits the unique constraint, returning `outcome="duplicate"` without poisoning the
+  transaction or persisting any changes.
 - **Dedupe retention: 7 days.** *Assumption:* Salesforce redelivers within 7 days. *If not:* a repeat
   that arrives after its ID has expired is not caught as a duplicate. The per-field time check still
   stops it from overwriting a newer value, but it adds a second history row.
@@ -284,9 +299,11 @@ Decided.
 
 - Only a **portal** change that applied at least one field creates an outbox row. Webhook and
   catch-up changes never do, so nothing received from Salesforce is ever sent back.
-- **Our echo:** a webhook whose `changedBy` is our integration user is our own update coming
-  back. It's recorded as a confirmation and never applied. This stops a delayed echo from
-  overwriting a newer portal edit.
+- **Our echo:** a webhook whose `changedBy` is our integration user (`settings.SALESFORCE_INTEGRATION_USER`,
+  a placeholder until set in `.env`; catch-up results count too) is our own update coming
+  back. It's recorded as a confirmation and never applied: one `echo` history row per field, and the
+  `ChangeEvent` is kept. No record column, `field_meta` or outbox row changes. This stops a delayed echo from
+  overwriting a newer portal edit. An echo never creates a record (Q17).
 - *Assumption:* `changedBy` shows our integration user for writes made through the API. *If not:* our
   own echo is applied like any Salesforce change. It is still not sent back, because webhook changes
   never create outbox rows.
@@ -381,7 +398,9 @@ Left out for now:
   is Python 3.14 with Django. This is the user's decision, recorded as a deviation. It is not a
   design choice.
 
-Not built yet (in scope, not left out): the webhook endpoint, outbound actors, the rate cap, and the
-sync rules in §5 to §9.
+Not built yet (in scope, not left out): the webhook endpoint view (phase 3), outbound actors,
+the shared rate limiter, the outage probe (phase 5), catch-up (phase 6), and portal API views
+(phase 7). The sync rules themselves in §5 to §9 are built at the database level in `apply()`
+(`src/sync/services.py`, phase 2, T-003).
 
 TODO: anything else we cut.

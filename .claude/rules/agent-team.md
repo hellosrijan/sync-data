@@ -13,6 +13,16 @@ Applies to every agent in `.claude/agents/agent-*.md` and to the `/monica` comma
 | **agent-chandler** | Brings docs, test results and `.claude` rules up to date for Monica's review, and records lessons in agent-memory. | Docs only |
 | **agent-rachel** | Backup. Unblocks any agent: research, a second opinion, or taking over a stuck subtask. | When asked |
 
+**Models (user decision):** every agent runs on `haiku` (cheaper) except `agent-monica`, which
+runs on `sonnet` — she's the one who approves plans, verifies every acceptance criterion
+herself and writes the verdict, so she keeps the stronger model. This also applies to
+`agent-code-review` (the `/ready-to-commit` reviewer, not part of the dispatch team but still
+"an agent other than Monica"). `document-update` and `chat-export` were already on `haiku`.
+Known risk: Haiku has occasionally been stopped mid-run by a model-provider safeguard on
+ordinary doc-editing work (observed once with `document-update` in this project). If an agent
+stops that way, Monica reports it to the user and waits — safeguards cover the whole
+conversation, not just that one subagent, so don't retry around it.
+
 Subagents can't start other subagents. Only Monica, running in the main session, dispatches.
 An agent that needs another agent says so in its report and in the ledger, and Monica
 dispatches.

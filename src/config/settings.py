@@ -148,6 +148,9 @@ REST_FRAMEWORK = {
 # Salesforce record API (outbound sync), see docs/design.md §6
 SALESFORCE_BASE_URL = env("SALESFORCE_BASE_URL")
 SALESFORCE_TOKEN = env("SALESFORCE_TOKEN")
+# Salesforce username of the integration user. Webhook changes whose actor is this user are our own
+# echoes (design §9). DEFAULTED placeholder: the brief does not name it.
+SALESFORCE_INTEGRATION_USER = env("SALESFORCE_INTEGRATION_USER", default="integration-user@example.invalid")
 SALESFORCE_RATE_LIMIT = env.int("SALESFORCE_RATE_LIMIT", default=90)
 
 # Dramatiq (Redis broker) - outbound sync worker, see docs/design.md §6

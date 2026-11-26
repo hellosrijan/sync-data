@@ -41,7 +41,7 @@ template in `.env.example`, same keys in both).
 src/manage.py
 src/config/   settings, urls (the only file that defines api/v1/)
 src/sync/     the sync app: models, admin, serializers.py, urls.py, permissions.py (IsSalesforceIntegration),
-              management/commands/create_integration_user.py, tests/
+              services.py (apply and rules core), management/commands/create_integration_user.py, tests/
 src/utils/    api/v1/health/ (DRF RetrieveAPIView), urls.py, serializers.py, rundramatiq override
 docs/         Round1.html (brief), design.md (design doc), build-plan.md (phases + checklist), openapi.yml (API contract), chats/ (session exports), tasks/ (agent-team ledgers)
 wiki/         hand-written GitHub wiki pages (Home, Architecture, Development-Workflow, _Sidebar)
@@ -75,7 +75,7 @@ uv run pytest -q                        # tests; needs the compose services up (
 ## Agent team (`/monica <task>`)
 
 Build work goes through the team. Give the task with `/monica <task>`. Monica (Sonnet) runs in
-the main session and dispatches the others; subagents can't dispatch each other.
+the main session and dispatches the others (all configured on Haiku, user decision); subagents can't dispatch each other.
 
 | Agent | Role |
 |---|---|
@@ -87,8 +87,8 @@ the main session and dispatches the others; subagents can't dispatch each other.
 | `agent-rachel` | Backup: unblocks any agent |
 
 - Read `.claude/rules/agent-team.md` (workflow, ledger, agent-memory protocol) and
-  `.claude/rules/drf.md` (code conventions). The skills are in `.claude/skills/drf-endpoint/` and
-  `.claude/skills/task-ledger/`.
+  `.claude/rules/drf.md` (code conventions). The skills are in `.claude/skills/` (`drf-endpoint`,
+  `task-ledger`, `sync-engine`, `sync-test-scenarios`, `sync-testing`).
 - Hand-offs go in the task ledger, `docs/tasks/T-<NNN>-<slug>.md`, which is committed.
   Cross-task lessons go in agent-memory, stored by Chandler only, titled
   `[team] T-<NNN> …`, with `project: "sync-data"`.
@@ -102,7 +102,8 @@ The build team's six agents are in the section above. These are the other agents
 - `document-update`: keeps `docs/design.md`, other `docs/*.md`, `README.md`, the `wiki/` pages
   and the non-rule sections of this file accurate and clear enough for a teammate to build from. It never edits
   `## Rules`, `Round1.html`, `docs/chats/` or `docs/tasks/`.
-- `agent-code-review` and `chat-export`: run **only** via `/ready-to-commit`.
+- `agent-code-review` and `chat-export`: run **only** via `/ready-to-commit`. Chat export includes
+  subagent transcripts and redacts `create_integration_user` bare tokens.
 
 ## opencode
 

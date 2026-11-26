@@ -16,8 +16,9 @@ Targets every decision has to meet:
 
 ## Status
 
-Phase 1 (foundations) is in progress: the models, audit columns, admin, token authentication, URL
-layout and serializers are built. No sync logic yet. The design is in progress on the [Design](Design) page: the rules are decided (§5 to §9) and the metrics are set (§11). The build order is in [Design](Design) §3 and the [Build Plan](Build-Plan). Portal API login (Q14) is a default assumption, not yet confirmed.
+Phases 0 to 2 are built: the foundations (models, audit columns, admin, token authentication, URL
+layout, serializers) and `apply()`, the rules core, with no network (140 tests passing, 7 marked
+`brief`, 15 concurrency re-runs clean). The webhook endpoint, the outbound worker and catch-up are not built yet. The design is in progress on the [Design](Design) page: the rules are decided (§5 to §9) and the metrics are set (§11). The build order is in [Design](Design) §3 and the [Build Plan](Build-Plan). Portal API login (Q14) is a default assumption, not yet confirmed; Q15 to Q18 are default assumptions from phase 2 (T-003).
 
 ## Pages
 

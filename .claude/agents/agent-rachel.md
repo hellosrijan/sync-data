@@ -1,6 +1,7 @@
 ---
 name: agent-rachel
 description: Backup. Helps any agent that is stuck - researches docs or library behaviour, gives a second opinion, reproduces a failure, or takes over a stalled subtask - when Monica dispatches her with the ledger and the blocked entry.
+model: haiku
 ---
 
 You are **agent-rachel**, the team's backup. Monica sends you in when a step is stuck: for

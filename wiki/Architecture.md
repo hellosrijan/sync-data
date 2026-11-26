@@ -130,7 +130,7 @@ Inside the portal box there are three smaller boxes, plus Redis and `apply()` si
 
 | Table | What it holds | Why it exists |
 |---|---|---|
-| **Customer / Contact** | The current value of every field, plus *when* each field was last set, by which side, and **the last value we synced from Salesforce** | The per-field time tells us whether an incoming change is newer. The last Salesforce value tells us which fields in a whole-record webhook actually changed. |
+| **Customer / Contact** | The current value of every field, plus *when* each field was last set, by which side, and **the last value we synced from Salesforce** | The per-field time tells us whether an incoming change is newer. The last Salesforce value lets us correctly tell which fields changed whether a webhook carries only the changed fields (the assumed case) or the whole record. |
 | **field_change** | Every change ever made: field, value, who, when, from which side, and whether it became current | The brief's history requirement. Rows are only added, never changed. |
 | **change_event** | The ID of every change we've seen, kept 7 days | Duplicate detection: a second copy of an ID is ignored |
 | **outbox** | Portal edits waiting to be sent to Salesforce, with their state (`pending`, `sent`, `needs_review`), attempts and next retry time | The pending work. It's on disk, so it survives restarts, and it's never dropped. |
@@ -192,16 +192,17 @@ This path exists because of one line in the brief: webhooks Salesforce tried to 
 
 The box says *dedupe · lock · history · per-field newest wins · outbox*. In order:
 
-1. **Dedupe:** try to record the change's ID. If it's already there, this is a duplicate, so reply OK and stop.
-2. **Lock** the record, so two simultaneous edits to it go one after the other instead of overwriting each other.
-3. **Echo check:** if the change came from Salesforce and its `changedBy` is *our integration user*, it's our own update coming back. Record it and stop.
-4. **For each field:**
-   - always write a history row;
-   - if the change is newer than that field's stored time, make it the current value;
+1. **Dedupe:** try to record the change's ID in a nested savepoint (`transaction.atomic()`). If it's already there, this is a duplicate, so return `duplicate` without poisoning the transaction and stop (no changes made).
+2. **Lock** the record (`SELECT … FOR UPDATE`), creating it if it's a new Salesforce record (`get_or_create`). An unknown portal pk or an unknown Salesforce update raises `UnknownRecord` and rolls back (Q16).
+3. **Echo check:** if the change came from Salesforce or catch-up and its actor is *our integration user* (`settings.SALESFORCE_INTEGRATION_USER`), it's our own update coming back: record history as `echo`, apply nothing to the record, and stop (Q15). An echo never creates a record (Q17).
+4. **For each changed field** (filtered by comparing against `field_meta.sf_value` for Salesforce and catch-up):
+   - always write a `field_change` history row;
+   - if the change is newer than that field's stored time, make it the current value and update `field_meta` (`at`, `source`, `by`, and `sf_value` on Salesforce changes);
    - if it's older, it stays in history only, marked *superseded*;
    - on an exact tie, Salesforce wins.
-5. **Outbox:** if the change came from the portal and changed at least one field, add an outbox row.
-6. **Commit**, so all of the above happens or none of it does.
+5. **Audit columns:** set `created_by` on creation; set `updated_by` on every change that applied at least one field.
+6. **Outbox:** if the change came from the portal and applied at least one field, upsert the single pending outbox row, merging the fields as a sorted union. A pending `create` stays `create` on merge (Q18). Salesforce and catch-up changes never write to outbox.
+7. **Commit**, so all of the above happens or none of it does.
 
 ### 5. The brief's scenario, traced through the diagram
 
@@ -240,20 +241,22 @@ Webhooks (A), portal saves and catch-up results (C) all go through `apply()`. On
 implementation covers duplicates, ordering, history and the loop rule.
 
 ```
-change = { source: salesforce | portal, event_id, record_id, occurred_at, actor, fields{...} }
+change = { source: salesforce | catch-up | portal, event_id, object_type, record_ref, occurred_at, actor, fields{...}, operation }
 
 one Postgres transaction:
- 1. Dedupe     INSERT event_id INTO change_event (unique). Conflict → duplicate: return OK.
- 2. Lock       SELECT record ... FOR UPDATE   (serialises concurrent edits to one record)
- 3. Echo       source = salesforce and actor = our integration user → our own update coming
-               back: record it as a confirmation, apply nothing, stop.
- 4. Per field  always INSERT field_change(record, field, value, actor, occurred_at, source)
-               occurred_at > field's stored time → becomes current          (applied)
-               otherwise → stays in history only                            (superseded)
+ 1. Dedupe     INSERT event_id INTO change_event in savepoint (unique). Conflict → duplicate: return OK.
+ 2. Lock       SELECT record ... FOR UPDATE (creates record on salesforce create; raises UnknownRecord on missing update/portal record)
+ 3. Echo       source in (salesforce, catch-up) and actor = settings.SALESFORCE_INTEGRATION_USER →
+               record history with status echo, apply nothing, stop (echo never creates a record).
+ 4. Per field  filter changed fields against field_meta.sf_value for salesforce/catch-up
+               always INSERT field_change(record, field, value, actor, occurred_at, source, status)
+               occurred_at > field's stored time → becomes current (applied), updates field_meta
+               otherwise → stays in history only (superseded)
                exact tie → Salesforce wins
- 5. Outbox     source = portal and a field was applied → INSERT outbox row
-               source = salesforce → never
- 6. COMMIT
+ 5. Audit      created_by on create; updated_by on applied change
+ 6. Outbox     source = portal and a field was applied → upsert pending outbox row (merge fields; pending create stays create)
+               source in (salesforce, catch-up) → never
+ 7. COMMIT
 ```
 
 Where the inputs come from:
@@ -263,7 +266,7 @@ Where the inputs come from:
 | `event_id` | `eventId` | New UUID | `record_id` + Salesforce modified time |
 | `occurred_at` | `occurredAt` | Our server clock when the save arrives | Salesforce modified time (record level) |
 | `actor` | `changedBy` | The logged-in portal user | Salesforce "last modified by" |
-| `fields` | Fields whose value differs from the last value we synced from Salesforce (the webhook carries the whole record, assumption Q2) | The fields in the form | Same comparison as a webhook |
+| `fields` | Fields whose value differs from the last value we synced from Salesforce (the webhook carries only the changed fields, assumption Q2 — but this comparison holds even if it ever carried the whole record instead) | The fields in the form | Same comparison as a webhook |
 
 ## Sending and retries (path B)
 
@@ -378,5 +381,6 @@ scales on its own.
 ## Still open
 
 All questions in [Design](Design) §1 are answered or recorded as assumptions. Q14 (how portal users
-log in to the portal API) is a default assumption, a DRF token per portal user, not yet confirmed.
+log in to the portal API) is a default assumption, a DRF token per portal user, not yet confirmed;
+Q15 to Q18 are default assumptions accepted in phase 2 (T-003).
 The build order of the subproblems is in [Design](Design) §3.

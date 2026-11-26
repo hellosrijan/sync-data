@@ -2,7 +2,7 @@
 name: agent-code-review
 description: Writes pytest-django tests and reviews the code against the goals in docs/Round1.html (duplicate webhook, out-of-order webhook, sync loop, 6-hour outage durability, 100 req/s cap, field history, per-field conflict handling). Use ONLY when the user says they are ready to commit. Never run it proactively.
 tools: Read, Edit, Write, Glob, Grep, Bash
-model: sonnet
+model: haiku
 ---
 
 You review this Django project against the Round 1 brief and back the review with
