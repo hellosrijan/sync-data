@@ -28,7 +28,7 @@ def test_ac_1_6_2_app_names():
 
     assert u.app_name == "utils" and s.app_name == "sync"
     assert [p.name for p in u.urlpatterns] == ["health"]
-    assert s.urlpatterns == []
+    assert [p.name for p in s.urlpatterns] == ["salesforce-webhook"]
 
 
 def test_ac_1_6_4_every_named_route_reverses():

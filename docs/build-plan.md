@@ -46,6 +46,8 @@ The user asked that work never stops for a question unless it's critical.
 | Q16 | Unknown record on portal save or Salesforce update | Raise `UnknownRecord` and roll back transaction; nothing created, `ChangeEvent` not kept (design §1 Q16). |
 | Q17 | Echo on create for unknown record | Never create a record; raise `UnknownRecord` and roll back (design §1 Q17). |
 | Q18 | Merging portal update into pending create outbox row | Keeps `operation="create"`, merging fields as a sorted union (design §1 Q18). |
+| Q19 | A contact whose customer isn't in the portal yet | Store the customer's Salesforce ID in `customer_salesforce_id`. Link the FK when that customer arrives (design §1 Q19, T-004). |
+| Q20 | Inbound `null`/`None` for optional string fields | Sanitize `None` to empty string `""` on non-nullable CharFields, TextFields, EmailFields (design §1 Q20, T-004). |
 | — | Build order (design §3) | This plan's phase order, riskiest first (see below). |
 | — | Where is "what changed" worked out for an inbound webhook? | **Inside** `apply()`, after `SELECT … FOR UPDATE`, so two webhooks for one record can't both compare against the same old value. (A correction found in review.) |
 | — | Echo detection on catch-up | Field by field: a field whose Salesforce value equals the value we last sent is our echo. Not record-level. (A correction found in review.) |
@@ -75,6 +77,8 @@ Tick one when you accept it. To change one, tell Monica; she updates the plan an
 - [ ] `created_by` / `updated_by` default to an empty string, not NULL (T-002)
 - [x] The contract (`openapi.yml`) lists only fields the API returns today, so `syncState` is out of the schema until phase 7 (7.1.1). Decided by the user, 2026-11-27 (option A).
 - [ ] `create_integration_user` prints the Salesforce token on **every** run (build-plan 1.2.3 said "once"). Recommended: print it only when it creates the token. Not changed yet; your call.
+- [ ] Contact parent customer resolution uses `customer_salesforce_id` to link asynchronously without requiring Customer to precede Contact (T-004, Q19)
+- [ ] Missing/cleared optional string fields in `apply()` sanitize `None` to `""` on non-nullable CharFields (T-004, Q20)
 
 ## Why this order (design §3)
 
@@ -312,14 +316,14 @@ Owner: Ross. Depends on: 2.3.
 
 ### 3.1 Webhook serializer and view
 Owner: Phoebe → Ross. Depends on: 2.3, 1.2.
-- [ ] 3.1.1 `WebhookEventSerializer`: required fields, `objectType` enum, ISO `occurredAt`; fields
-  outside the brief's scope are ignored.
-- [ ] 3.1.2 A `CreateAPIView` that overrides `create` to call `apply()` and answer **200** with
-  `WebhookResult`.
-- [ ] 3.1.3 Permission: `IsSalesforceIntegration` with `TokenAuthentication` first, so a bad token
-  gets 401.
-- [ ] 3.1.4 A contact webhook whose `customer` isn't known yet: store `customer_salesforce_id`.
-  When the customer arrives, link waiting contacts.
+- [x] 3.1.1 `WebhookEventSerializer`: required fields, `objectType` enum, ISO `occurredAt`; fields
+  outside the brief's scope are ignored. *Done 2026-11-27.*
+- [x] 3.1.2 A `CreateAPIView` that overrides `create` to call `apply()` and answer **200** with
+  `WebhookResult`. *Done 2026-11-27.*
+- [x] 3.1.3 Permission: `IsSalesforceIntegration` with `TokenAuthentication` first, so a bad token
+  gets 401. *Done 2026-11-27.*
+- [x] 3.1.4 A contact webhook whose `customer` isn't known yet: store `customer_salesforce_id`.
+  When the customer arrives, link waiting contacts. *Done 2026-11-27.*
 
 **Done when:**
 - 401 without a token, 403 with a portal user's token, 400 on a malformed payload, and
@@ -329,7 +333,7 @@ Owner: Phoebe → Ross. Depends on: 2.3, 1.2.
 
 ### 3.2 Dedupe retention
 Owner: Phoebe → Ross. Depends on: 3.1.
-- [ ] 3.2.1 A daily dramatiq-crontab job deletes `ChangeEvent` rows older than 7 days.
+- [x] 3.2.1 A daily dramatiq-crontab job deletes `ChangeEvent` rows older than 7 days. *Done 2026-11-27.*
 
 **Done when:** a test with an injected clock shows an 8-day-old row removed and a 6-day-old row
 kept.
@@ -572,7 +576,7 @@ checkboxes after every task.
 | Planning | ✅ Done: architecture, design Q1–Q14, agent team, this plan, apps/models/endpoints, `openapi.yml` |
 | 1 Foundations | ✅ Done: 1.1–1.7 all complete (skills, chat export, ledgers T-001, T-002) |
 | 2 `apply()` | ✅ Done: `apply()`, `Change`/`Result`, outbox + sync-loop rule built and verified (T-003, 140 tests, 7 `brief`-marked, 15 concurrency re-runs clean) |
-| 3 Inbound webhook | Not started |
+| 3 Inbound webhook | ✅ Done: WebhookView, WebhookEventSerializer, token auth, customer linkage, dedupe purge task (T-004, 160 tests, 8 `brief`-marked) |
 | 4 Test scenarios | Not started |
 | 5 Outbound and outage | Not started |
 | 6 Catch-up | Not started |

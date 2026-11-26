@@ -41,7 +41,8 @@ template in `.env.example`, same keys in both).
 src/manage.py
 src/config/   settings, urls (the only file that defines api/v1/)
 src/sync/     the sync app: models, admin, serializers.py, urls.py, permissions.py (IsSalesforceIntegration),
-              services.py (apply and rules core), management/commands/create_integration_user.py, tests/
+              services.py (apply and rules core), views.py (WebhookView), tasks.py (dedupe retention),
+              management/commands/create_integration_user.py, tests/
 src/utils/    api/v1/health/ (DRF RetrieveAPIView), urls.py, serializers.py, rundramatiq override
 docs/         Round1.html (brief), design.md (design doc), build-plan.md (phases + checklist), openapi.yml (API contract), chats/ (session exports), tasks/ (agent-team ledgers)
 wiki/         hand-written GitHub wiki pages (Home, Architecture, Development-Workflow, _Sidebar)

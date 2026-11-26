@@ -646,9 +646,10 @@ def _url_strings(patterns):
             yield from _url_strings(p.url_patterns)
 
 
-def test_ac_2_6_no_webhook_route_or_task_module_in_this_phase():
-    assert not (ROOT / "src" / "sync" / "tasks.py").exists()
-    assert not any("webhook" in s.lower() for s in _url_strings(get_resolver().url_patterns))
+def test_ac_2_6_no_outbound_client_or_portal_views_in_this_phase():
+    # Don't build ahead: outbound client (phase 5) and portal views (phase 7) not built yet
+    assert not (ROOT / "src" / "sync" / "client.py").exists()
+    assert not any("api/v1/customer" in s.lower() for s in _url_strings(get_resolver().url_patterns))
 
 
 @db

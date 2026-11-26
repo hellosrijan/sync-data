@@ -79,7 +79,7 @@ docker compose up -d --wait
 uv run pytest -q
 ```
 
-Tests live in `src/<app>/tests/`. `uv run pytest -q` runs them all (140 passed, 7 marked `brief`). The health tests use the real Postgres and Redis from Compose.
+Tests live in `src/<app>/tests/`. `uv run pytest -q` runs them all (160 passed, 8 marked `brief`). The health tests use the real Postgres and Redis from Compose.
 pytest-django creates a separate test database. Salesforce is faked inside the tests
 (`src/sync/tests/fakes.py`, build plan phase 4): no extra app or container.
 
@@ -100,6 +100,8 @@ pytest-django creates a separate test database. Salesforce is faked inside the t
 - **Phase 2 defaulted items.** Q15 (`SALESFORCE_INTEGRATION_USER` setting), Q16 (unknown record raises
   `UnknownRecord` and rolls back), Q17 (echo never creates a record), and Q18 (merging portal update into
   pending `create` outbox row keeps `operation=create`) were accepted in Phase 2 (T-003).
+- **Phase 3 defaulted items.** Q19 (Contact customer linkage via `customer_salesforce_id` for asynchronous
+  parent resolution) and Q20 (sanitizing `None` to `""` on non-nullable CharFields) were accepted in Phase 3 (T-004).
 
 ## How this wiki is published
 

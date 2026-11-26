@@ -16,9 +16,10 @@ Targets every decision has to meet:
 
 ## Status
 
-Phases 0 to 2 are built: the foundations (models, audit columns, admin, token authentication, URL
-layout, serializers) and `apply()`, the rules core, with no network (140 tests passing, 7 marked
-`brief`, 15 concurrency re-runs clean). The webhook endpoint, the outbound worker and catch-up are not built yet. The design is in progress on the [Design](Design) page: the rules are decided (§5 to §9) and the metrics are set (§11). The build order is in [Design](Design) §3 and the [Build Plan](Build-Plan). Portal API login (Q14) is a default assumption, not yet confirmed; Q15 to Q18 are default assumptions from phase 2 (T-003).
+Phases 0 to 3 are built: the foundations (models, audit columns, admin, token authentication, URL
+layout, serializers), `apply()` (`src/sync/services.py`), the inbound webhook endpoint (`POST /api/v1/webhooks/salesforce/`),
+customer linkage, and the dedupe retention task (160 tests passing, 8 marked
+`brief`). The outbound worker and catch-up are not built yet. The design is in progress on the [Design](Design) page: the rules are decided (§5 to §9) and the metrics are set (§11). The build order is in [Design](Design) §3 and the [Build Plan](Build-Plan). Portal API login (Q14) is a default assumption, not yet confirmed; Q15 to Q18 are default assumptions from phase 2 (T-003); Q19 and Q20 (Contact customer linkage and string `None` sanitization) are default assumptions from phase 3 (T-004).
 
 ## Pages
 

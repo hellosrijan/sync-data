@@ -39,3 +39,24 @@ class FieldChangeSerializer(serializers.ModelSerializer):
         model = FieldChange
         fields = ["id", "field", "value", "actor", "source", "occurredAt", "status", "eventId"]
         read_only_fields = fields
+
+
+class WebhookEventSerializer(serializers.Serializer):
+    eventId = serializers.CharField(max_length=128)
+    recordId = serializers.CharField(max_length=18)
+    objectType = serializers.ChoiceField(choices=["Customer", "Contact"])
+    occurredAt = serializers.DateTimeField()
+    changedBy = serializers.CharField(max_length=255)
+    changedFields = serializers.DictField(required=True)
+
+    def validate_changedFields(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("changedFields must be a dictionary.")
+        return value
+
+
+class WebhookResultSerializer(serializers.Serializer):
+    eventId = serializers.CharField()
+    result = serializers.ChoiceField(choices=["applied", "duplicate", "echo", "superseded", "no_change"])
+    appliedFields = serializers.ListField(child=serializers.CharField(), required=False, default=list)
+

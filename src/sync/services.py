@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from django.conf import settings
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 
 from sync.models import ChangeEvent, Contact, Customer, FieldChange, Outbox
@@ -73,6 +73,12 @@ def apply(change: Change) -> Result:
             record.updated_by = change.actor
         if created or applied_fields:
             record.save()
+            if change.object_type == "Customer" and record.salesforce_id:
+                # When customer arrives, link waiting contacts (build-plan 3.1.4)
+                Contact.objects.filter(
+                    customer_salesforce_id=record.salesforce_id,
+                    customer__isnull=True,
+                ).update(customer=record)
 
         if change.source == "portal" and applied_fields:
             _upsert_outbox_row(change.object_type, record.pk, applied_fields, change.operation)
@@ -123,11 +129,18 @@ def _is_newer(change: Change, record: Any, name: str) -> bool:
 
 
 def _write_history(change: Change, record: Any, name: str, value: Any, status: str) -> None:
+    if value is None:
+        val_str = None
+    elif isinstance(value, Customer):
+        val_str = value.salesforce_id or str(value.pk)
+    else:
+        val_str = str(value)
+
     FieldChange.objects.create(
         object_type=change.object_type,
         record_id=record.pk,
         field=name,
-        value=None if value is None else str(value),
+        value=val_str,
         actor=change.actor,
         source=change.source,
         occurred_at=change.occurred_at,
@@ -144,7 +157,37 @@ def _apply_field(change: Change, record: Any, name: str, value: Any) -> None:
     elif "sf_value" in old:  # portal edit: keep what Salesforce last sent
         meta["sf_value"] = old["sf_value"]
     record.field_meta[name] = meta
-    setattr(record, name, value)
+
+    if change.object_type == "Contact" and name == "customer":
+        if change.source in SF_SOURCES:
+            sf_cust_id = str(value) if value is not None else ""
+            record.customer_salesforce_id = sf_cust_id
+            if sf_cust_id:
+                record.customer = Customer.objects.filter(salesforce_id=sf_cust_id).first()
+            else:
+                record.customer = None
+            meta["sf_value"] = sf_cust_id
+        else:
+            if isinstance(value, Customer):
+                record.customer = value
+                record.customer_salesforce_id = value.salesforce_id or ""
+            elif value:
+                cust = Customer.objects.filter(pk=value).first()
+                record.customer = cust
+                record.customer_salesforce_id = cust.salesforce_id if cust else ""
+            else:
+                record.customer = None
+                record.customer_salesforce_id = ""
+    else:
+        field_obj = record._meta.get_field(name)
+        if value is None and getattr(field_obj, "null", False) is False:
+            if hasattr(field_obj, "get_internal_type") and field_obj.get_internal_type() in (
+                "CharField",
+                "TextField",
+                "EmailField",
+            ):
+                value = ""
+        setattr(record, name, value)
 
 
 def _upsert_outbox_row(object_type: str, record_id: int, applied_fields: list[str], operation: str) -> None:

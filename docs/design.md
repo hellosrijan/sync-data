@@ -5,13 +5,15 @@ Status: **design in progress**. Phase 0 is built (Compose stack, Django project)
 tasks 1.2 to 1.7 (ledgers T-001 and T-002). That covers the six models and their constraints,
 the audit columns `created_by` and `updated_by`, token authentication, admin, the `api/v1/` URL layout,
 serializers and `GET /api/v1/health/`. Phase 2 is built (ledger T-003): `apply()` (`src/sync/services.py`),
-the rules core, with no network (140 tests passing, 7 marked `brief`, 15 concurrency runs clean).
-The webhook view, the outbound worker and catch-up are not built yet.
+the rules core, with no network. Phase 3 is built (ledger T-004): `WebhookView` at
+`/api/v1/webhooks/salesforce/`, `WebhookEventSerializer`, customer linkage, and dedupe purge task (160 tests passing, 8 marked `brief`).
+The outbound worker and catch-up are not built yet.
 Decided: §5 to §9; Q4 to Q9 and Q11 in §1;
 all three metrics in §11. Q1 to Q3, Q10, Q12 and Q13 are recorded as assumptions, and §10 is
 arithmetic on them. Q14 (portal login) is a default assumption from the build plan. Q15 to Q18
 (echo setting, unknown record error/rollback, echo never creates, pending create merge) are default
-assumptions from phase 2 (T-003). §3 and §4 are
+assumptions from phase 2 (T-003). Q19 and Q20 (Contact customer linkage via `customer_salesforce_id`
+and sanitizing `None` to `""` on string fields) are default assumptions from phase 3 (T-004). §3 and §4 are
 set by the build plan ([`build-plan.md`](build-plan.md)) and the API contract
 ([`openapi.yml`](openapi.yml)). Still TODO: §12 "anything else we cut".
 
@@ -58,14 +60,16 @@ Questions added while writing this doc (not in the brief):
 | Q16 | DEFAULTED (T-003): what happens when a portal change names a record that does not exist, or a Salesforce update names an unknown `salesforce_id`? | **Assumption: raise `UnknownRecord` and roll back.** Nothing is created, and the `ChangeEvent` is not kept, so a retry is not reported as a duplicate. Design is silent on an update to an unknown record, and swallowing it would lose data. | If the answer were "create it", a Salesforce update for an unknown id would create a row with partial data. The rollback rule would also change, so a retry would need its own dedupe rule. |
 | Q17 | DEFAULTED (T-003): can an echo create a record? A Salesforce `create` echo (integration user) for an id we do not hold. | **Assumption: no.** An echo never creates a record, so a second copy of a record we already sent never appears. The echo raises `UnknownRecord` as in Q16. | If an echo should create, the record would exist without a real Salesforce change behind it. Allowing it means the echo rule has to write the record, not only history. |
 | Q18 | DEFAULTED (T-003): a portal change merges into a pending outbox row whose operation is `create`. Does the merged row stay `create`? | **Assumption: yes, it stays `create`.** A create that has not been sent yet must still be sent as a create. `operation` is set only when the row is inserted, and a merge changes `fields` alone. | If the merged row became `update`, Salesforce would receive an update for a record it does not have yet. The merge rule would need to check the operation of the earlier row. |
+| Q19 | DEFAULTED (T-004): a Contact webhook arrives with a `customer` Salesforce ID before that Customer exists in the portal. How is linkage handled? | **Assumption: store `customer_salesforce_id` and set `customer=None`.** When a Customer arrives later, `apply()` queries and links waiting contacts matching `customer_salesforce_id`. | If ordering was strictly required, the Contact webhook would fail with 400 or retry repeatedly, wasting capacity and delaying contact availability. |
+| Q20 | DEFAULTED (T-004): an inbound webhook carries `null`/`None` for an optional non-nullable string field. | **Assumption: sanitize `None` to empty string `""`.** Non-nullable CharFields, TextFields, and EmailFields convert `None` to `""` before saving. | If `None` were not sanitized, Django would raise an IntegrityError or ValidationError on save, rejecting valid Salesforce clearance of string fields. |
 
 ## 2. Systems, who calls whom, network boundary, interfaces
 
 | Part | Runs where | Job | Status |
 |---|---|---|---|
 | Salesforce | Client's infrastructure | CRM. Sales users edit here. Has its own database. | Exists. Not ours. |
-| Django web | Django 5.2 on the host (`runserver`) | HTTP entry point: the webhook endpoint (path A) and the portal API (Q6). Serves `GET /api/v1/health/` today. | Health check only. Webhook endpoint and portal API not built. Portal login: DRF token per user (Q14, default); the Salesforce integration user comes from `manage.py create_integration_user`. |
-| Dramatiq worker | Container `worker` | Runs Dramatiq actors and the dramatiq-crontab scheduler. | Only dramatiq-crontab's own heartbeat actor runs. No sync actors yet. |
+| Django web | Django 5.2 on the host (`runserver`) | HTTP entry point: the webhook endpoint (path A) and the portal API (Q6). Serves `GET /api/v1/health/` and `POST /api/v1/webhooks/salesforce/` today. | Webhook endpoint built (phase 3, T-004); portal API not built yet. Portal login: DRF token per user (Q14, default); the Salesforce integration user comes from `manage.py create_integration_user`. |
+| Dramatiq worker | Container `worker` | Runs Dramatiq actors and the dramatiq-crontab scheduler. | Runs dedupe retention actor `purge_expired_change_events` (daily at 02:00, `@cron` in `src/sync/tasks.py`) and dramatiq-crontab's heartbeat. Outbound and catch-up sync actors not built yet. |
 | Postgres 17 | Container `db` | Portal copy of the records. | Running. Six models, migrations `0001_initial` and `0002_audit_columns` (§4). |
 | Redis 7 | Container `redis` | Dramatiq broker (task messages), wake-up signal for the outbox, shared rate-limiter count, scheduler lock, health ping. | Running, AOF on. |
 
@@ -108,8 +112,9 @@ gets 401. Health opts out with `AllowAny`. The Salesforce integration user is in
 
 Done (phase 0): Compose stack with Postgres, Redis (AOF on) and the worker; Django project; health endpoint;
 worker reload override. Phase 1 done (T-001, T-002): models, audit columns, auth, admin, URL layout,
-serializers, skills and the chat-export change. Phase 2 built (T-003): `apply()`, with its tests. Not built:
-phases 3 to 9. Full phases, tasks and subtasks: [`build-plan.md`](build-plan.md).
+serializers, skills and the chat-export change. Phase 2 built (T-003): `apply()`, with its tests. Phase 3
+built (T-004): `WebhookView`, `WebhookEventSerializer`, customer linkage, and dedupe retention task (160 tests passing,
+8 marked `brief`). Not built: phases 4 to 9. Full phases, tasks and subtasks: [`build-plan.md`](build-plan.md).
 
 Riskiest first:
 
@@ -117,7 +122,7 @@ Riskiest first:
 |---|---|---|
 | 1 | **Foundations:** apps, models, admin, the API contract | Everything else needs the tables and constraints. The dedupe and outbox guarantees are database constraints, so they come first. |
 | 2 | **`apply()`:** duplicate, out-of-order, per-field merge, history, sync loop | **Riskiest.** Every rule the brief checks runs here. If it's wrong, nothing on top can be right. It needs no network, so it's the cheapest place to prove the rules. |
-| 3 | **Inbound webhook** (path A) | A thin, checked entry into `apply()` |
+| 3 | **Inbound webhook** (path A) | A thin, checked entry into `apply()`. Built in phase 3 (T-004). |
 | 4 | **Test scenarios:** a fake Salesforce inside the test suite (no extra app or container) | Makes outages, 429s, rejections, duplicates and echoes reproducible before building outbound. The brief: *"call a fake CRM you write yourself"*. |
 | 5 | **Outbound and the outage** (path B): limiter, retries, down detection, restart safety | **Second riskiest.** This is where work gets lost if we're wrong: the 6-hour outage, retries counted in the cap, surviving restarts. |
 | 6 | **Catch-up** (path C) | Depends on 4 and 5. Recovers webhooks missed during an outage. |
@@ -183,8 +188,9 @@ catch-up watermark, the Salesforce up/down state and the consecutive-failure cou
 
 ## 5. Inbound path: webhook to our database
 
-Steps 1 to 3 and 6 are not built (the endpoint is phase 3). Steps 4 and 5 are built (phase 2, T-003):
-step 4 runs inside `apply()`'s record lock, and step 5 is `apply()` itself. Brief: "Our endpoint has to accept it, check it, and apply it before anything is
+Built (phases 2 and 3, ledgers T-003 and T-004): `WebhookView` at `/api/v1/webhooks/salesforce/`,
+`WebhookEventSerializer`, token authentication (`IsSalesforceIntegration`), customer linkage (Contact `customer_salesforce_id`
+and Customer arrival), step 4 inside `apply()`'s record lock, step 5 `apply()` itself, and HTTP 200 response. Brief: "Our endpoint has to accept it, check it, and apply it before anything is
 stored." Webhooks can arrive twice and out of order, and `occurredAt` is Salesforce's time for
 the event.
 
@@ -194,16 +200,27 @@ Decided. Steps 1 to 4 run before anything is stored. Step 5 is the first write.
 2. **Authenticate (Q11):** DRF `TokenAuthentication`. A missing or wrong token gets **401** and
    nothing is stored. The token belongs to a dedicated integration user, and a permission check
    limits that user to this endpoint.
-3. **Validate:** a DRF serializer checks `eventId`, `recordId`, `objectType` (Customer or Contact),
-   `occurredAt` (ISO 8601) and `changedBy`. Fields outside the brief's scope are ignored. A
-   malformed payload gets **400** and nothing is stored.
+3. **Validate:** `WebhookEventSerializer` validates required fields: `eventId` (max 128),
+   `recordId` (max 18), `objectType` (enum: `Customer`, `Contact`), `occurredAt` (ISO 8601),
+   `changedBy` (max 255), and `changedFields` (dict). Fields outside the brief's scope are ignored.
+   A malformed payload or missing required field gets **400** and nothing is stored.
 4. **Work out what changed (Q2):** the webhook carries only the changed fields (assumption,
    matches the brief's sample). A field counts as changed only if its value differs from the
    last value we synced from Salesforce — the same comparison that makes the rule correct even
    if a webhook ever carries the whole record instead.
+   - **Customer linkage for Contact:** if a Contact webhook carries a `customer` Salesforce ID (`001...`),
+     it stores `customer_salesforce_id`. If that Customer already exists in Postgres, `contact.customer`
+     is linked; if the Customer has not arrived yet, `contact.customer` is set to `None`. When that
+     Customer arrives later via webhook or `apply()`, waiting contacts with matching `customer_salesforce_id`
+     are linked automatically.
+   - **Data sanitization:** optional non-nullable CharFields with `None` values (e.g. cleared strings)
+     are sanitized to empty string `""` before saving.
 5. **Apply:** `apply()` runs the duplicate, echo, ordering and history rules (§7 to §9) in one
    transaction.
-6. **Respond 200** after the commit, also for a duplicate, so Salesforce stops redelivering it.
+6. **Respond 200** with `WebhookResult` schema (`{"eventId": ..., "result": outcome, "appliedFields": [...]}`)
+   after the commit, also for duplicates (`result="duplicate"`), echoes (`result="echo"`), superseded
+   changes (`result="superseded"`), or no-op re-deliveries (`result="no_change"`). It always returns
+   HTTP 200 OK (never 201), so Salesforce stops redelivering.
 
 The endpoint runs in the Django web process, separate from the worker (Q6).
 
@@ -288,7 +305,9 @@ Decided.
   transaction or persisting any changes.
 - **Dedupe retention: 7 days.** *Assumption:* Salesforce redelivers within 7 days. *If not:* a repeat
   that arrives after its ID has expired is not caught as a duplicate. The per-field time check still
-  stops it from overwriting a newer value, but it adds a second history row.
+  stops it from overwriting a newer value, but it adds a second history row. Built in phase 3 (T-004):
+  a daily dramatiq-crontab actor `purge_expired_change_events` (`@cron("0 2 * * *")` in `src/sync/tasks.py`)
+  deletes `ChangeEvent` records where `received_at < now() - 7 days`.
 - **Older after newer:** per field, an `occurred_at` older than the field's stored time is
   written to history as *superseded*. It never becomes the current value. The earlier edit stays
   on record, as the brief requires.
@@ -398,9 +417,12 @@ Left out for now:
   is Python 3.14 with Django. This is the user's decision, recorded as a deviation. It is not a
   design choice.
 
-Not built yet (in scope, not left out): the webhook endpoint view (phase 3), outbound actors,
-the shared rate limiter, the outage probe (phase 5), catch-up (phase 6), and portal API views
-(phase 7). The sync rules themselves in §5 to §9 are built at the database level in `apply()`
-(`src/sync/services.py`, phase 2, T-003).
+Built in scope: inbound webhook endpoint and dedupe retention (phase 3, T-004), `apply()`
+rules core (phase 2, T-003), foundations, models, admin and auth (phase 1, T-001, T-002).
+Not built yet (in scope, not left out): FakeSalesforce test double and scenarios (phase 4),
+outbound actors, the shared rate limiter, the outage probe (phase 5), catch-up (phase 6),
+portal API views (phase 7), and the demo script (phase 8). The sync rules themselves in §5 to §9
+are built at the database level in `apply()` (`src/sync/services.py`, phase 2, T-003) and exposed
+inbound via `WebhookView` (`src/sync/views.py`, phase 3, T-004).
 
 TODO: anything else we cut.

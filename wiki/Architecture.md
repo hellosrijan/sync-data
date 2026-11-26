@@ -130,15 +130,16 @@ Inside the portal box there are three smaller boxes, plus Redis and `apply()` si
 
 | Table | What it holds | Why it exists |
 |---|---|---|
-| **Customer / Contact** | The current value of every field, plus *when* each field was last set, by which side, and **the last value we synced from Salesforce** | The per-field time tells us whether an incoming change is newer. The last Salesforce value lets us correctly tell which fields changed whether a webhook carries only the changed fields (the assumed case) or the whole record. |
+| **Customer / Contact** | The current value of every field, plus *when* each field was last set, by which side, and **the last value we synced from Salesforce** | The per-field time tells us whether an incoming change is newer. The last Salesforce value lets us correctly tell which fields changed whether a webhook carries only the changed fields (the assumed case) or the whole record. Contact also holds `customer_salesforce_id` to link to Customer asynchronously. |
 | **field_change** | Every change ever made: field, value, who, when, from which side, and whether it became current | The brief's history requirement. Rows are only added, never changed. |
-| **change_event** | The ID of every change we've seen, kept 7 days | Duplicate detection: a second copy of an ID is ignored |
+| **change_event** | The ID of every change we've seen, kept 7 days | Duplicate detection: a second copy of an ID is ignored. Rows older than 7 days are purged daily by dramatiq-crontab actor `purge_expired_change_events`. |
 | **outbox** | Portal edits waiting to be sent to Salesforce, with their state (`pending`, `sent`, `needs_review`), attempts and next retry time | The pending work. It's on disk, so it survives restarts, and it's never dropped. |
 | **watermark** | How far the last catch-up got | So the next catch-up only asks for what's new |
 
 **Redis**, mainly a doorbell. When a row lands in the outbox, Redis tells the worker "there's work". If Redis lost that message, no work would be lost, because the outbox in Postgres still holds the row. That's why it's labelled *wake-up signal* and not *queue*. Redis also holds the shared limiter count and Dramatiq's own task messages, but no pending calls.
 
-**Dramatiq worker**, the background process that talks to Salesforce. It has three parts:
+**Dramatiq worker**, the background process that talks to Salesforce. It has four parts:
+- **Dedupe retention task:** purges `ChangeEvent` rows older than 7 days (daily at 02:00, `@cron` in `src/sync/tasks.py`). Built in phase 3.
 - **Outbound task:** sends pending outbox rows to Salesforce.
 - **Catch-up task:** asks Salesforce what changed, after an outage and every 5 minutes as a safety net.
 - **Shared rate limiter**, the hexagon. *Every* call we make to Salesforce goes through it: sends, retries and catch-up queries. It keeps the total at or under the run rate of 90 req/s, below the 100 req/s cap (Q10). It lives in Redis so that all worker threads and processes share one count. Webhooks don't pass through it, because the brief says they don't count.
@@ -151,8 +152,8 @@ Inside the portal box there are three smaller boxes, plus Redis and `apply()` si
 
 1. A sales user changes a phone number in Salesforce.
 2. Salesforce sends a webhook to our endpoint over HTTPS. It carries `eventId`, `recordId`, `objectType`, `occurredAt`, `changedBy` and `changedFields`.
-3. The endpoint checks the DRF token (401 if wrong), validates the payload (400 if malformed), works out which fields actually changed, and calls `apply()`. Nothing is stored before these checks pass.
-4. `apply()` updates the current phone (if this change is the newest), writes a history row, and records the event ID.
+3. The endpoint checks the DRF token (401 if missing/wrong, 403 if portal user token), validates the payload (400 if malformed), filters to allowed fields (mapping `fullName` to `full_name`, ignoring out-of-scope fields), sanitizes `None` values on non-nullable string fields, and calls `apply()`. For contacts, customer linkage is resolved asynchronously via `customer_salesforce_id`. Nothing is stored before these checks pass.
+4. `apply()` updates the current phone (if this change is the newest), writes a history row, and records the event ID. The view returns HTTP 200 OK with `WebhookResult` schema (`eventId`, `result`, `appliedFields`) for all accepted outcomes (`applied`, `duplicate`, `echo`, `superseded`, `no_change`).
 5. **No arrow goes from this path to the outbox.** That's the sync-loop rule: anything that came *from* Salesforce is never sent *back* to Salesforce.
 
 It's fast (milliseconds), and it doesn't count against the rate limit.
@@ -200,7 +201,7 @@ The box says *dedupe · lock · history · per-field newest wins · outbox*. In 
    - if the change is newer than that field's stored time, make it the current value and update `field_meta` (`at`, `source`, `by`, and `sf_value` on Salesforce changes);
    - if it's older, it stays in history only, marked *superseded*;
    - on an exact tie, Salesforce wins.
-5. **Audit columns:** set `created_by` on creation; set `updated_by` on every change that applied at least one field.
+5. **Audit columns and linkage:** set `created_by` on creation; set `updated_by` on every change that applied at least one field. On Customer arrival or update, link waiting contacts that match `customer_salesforce_id`.
 6. **Outbox:** if the change came from the portal and applied at least one field, upsert the single pending outbox row, merging the fields as a sorted union. A pending `create` stays `create` on merge (Q18). Salesforce and catch-up changes never write to outbox.
 7. **Commit**, so all of the above happens or none of it does.
 
@@ -370,8 +371,8 @@ why Q12 is a stated assumption.
 
 | Service | Runs | Paths |
 |---|---|---|
-| Django web | Webhook endpoint, portal API, `apply()` for webhooks and portal saves | A, and the first half of B (edit → outbox) |
-| Dramatiq worker | Outbound task, catch-up task (calls `apply()` for each record it gets back), shared limiter | Second half of B (outbox → Salesforce), and C |
+| Django web | Webhook endpoint (`POST /api/v1/webhooks/salesforce/`, built), portal API (not built), `apply()` for webhooks and portal saves | A, and the first half of B (edit → outbox) |
+| Dramatiq worker | Dedupe retention task (`purge_expired_change_events`, built), outbound task (not built), catch-up task (not built), shared limiter (not built) | Dedupe maintenance, second half of B (outbox → Salesforce), and C |
 
 They never call each other. **What crosses the boundary:** outbox rows in Postgres (the work)
 and a Redis nudge. The worker writes results back to Postgres. A 6-hour outage only backs up the
@@ -382,5 +383,6 @@ scales on its own.
 
 All questions in [Design](Design) §1 are answered or recorded as assumptions. Q14 (how portal users
 log in to the portal API) is a default assumption, a DRF token per portal user, not yet confirmed;
-Q15 to Q18 are default assumptions accepted in phase 2 (T-003).
+Q15 to Q18 are default assumptions accepted in phase 2 (T-003); Q19 and Q20 (Contact customer linkage
+via `customer_salesforce_id` and string `None` sanitization) are default assumptions accepted in phase 3 (T-004).
 The build order of the subproblems is in [Design](Design) §3.

@@ -7,9 +7,10 @@ yet). Design targets: 5 million
 records, a 30-second sync window while both sides are up, and surviving a 6-hour Salesforce outage.
 The brief is in [`docs/Round1.html`](docs/Round1.html).
 
-Status: phases 0 to 2 are built. The models, admin, token authentication, URL layout and serializers
-are built, and so is `apply()` (`src/sync/services.py`), the rules core with no network (140 tests passing,
-including 7 marked `brief`). The webhook endpoint, the outbound worker and catch-up are not built yet.
+Status: phases 0 to 3 are built. The models, admin, token authentication, URL layout, serializers,
+`apply()` (`src/sync/services.py`), the inbound webhook endpoint (`POST /api/v1/webhooks/salesforce/`),
+customer linkage, and dedupe retention task are built (160 tests passing, including 8 marked `brief`).
+The outbound worker and catch-up are not built yet.
 The build plan and its checklist are in [`docs/build-plan.md`](docs/build-plan.md).
 
 ## Stack
@@ -63,8 +64,9 @@ The `worker` container runs two processes:
   `@interval(...)`. A Redis lock keeps it to one scheduler.
 
 If either process exits, the container exits and `restart: unless-stopped` brings both back.
-`docker compose logs -f worker` shows a heartbeat line every minute when both are healthy. The
-heartbeat is dramatiq-crontab's own actor; the project has no actors yet.
+`docker compose logs -f worker` shows a heartbeat line every minute when both are healthy (dramatiq-crontab's
+heartbeat actor). The sync app's daily dedupe retention actor (`purge_expired_change_events`, daily at 02:00)
+runs here; outbound and catch-up sync actors are not built yet.
 
 Put actors in `<app>/tasks.py`; both commands discover them automatically. After changing
 dependencies, rebuild with `docker compose up -d --build worker`.
@@ -89,7 +91,8 @@ src/
   config/      Django project: settings, urls, wsgi/asgi
   sync/        the sync app: models (Customer, Contact, ChangeEvent, FieldChange, Outbox,
                SyncState), admin, serializers, permissions, services (apply() and rules core),
-               urls, create_integration_user command, tests
+               views (WebhookView), tasks (purge_expired_change_events), urls,
+               create_integration_user command, tests
   utils/       shared bits: api/v1/health/ endpoint (views, urls, serializers), rundramatiq
                override (fixes --reload), tests
 docs/          Round1.html (the brief), design.md (design doc), build-plan.md (phases and
